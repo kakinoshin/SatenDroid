@@ -194,28 +194,59 @@ private fun LocalFileListScreen(
         isRefreshing = true
         
         try {
-            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            val satendroidDir = File(downloadsDir, "SatenDroid")
-            
             val allZipFiles = mutableListOf<File>()
             
-            // Scan Downloads root
-            if (downloadsDir.exists()) {
-                downloadsDir.listFiles { file ->
+            // Scan app-specific external files directory (main location)
+            val appDownloadsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            if (appDownloadsDir != null && appDownloadsDir.exists()) {
+                println("DEBUG: Scanning app downloads dir: ${appDownloadsDir.absolutePath}")
+                
+                // Scan root directory
+                appDownloadsDir.listFiles { file ->
                     file.extension.lowercase() == "zip"
                 }?.let { allZipFiles.addAll(it) }
+                
+                // Scan SatenDroid subdirectory
+                val satenDroidDir = File(appDownloadsDir, "SatenDroid")
+                if (satenDroidDir.exists()) {
+                    println("DEBUG: Scanning SatenDroid dir: ${satenDroidDir.absolutePath}")
+                    satenDroidDir.walkTopDown().filter { file ->
+                        file.extension.lowercase() == "zip"
+                    }.forEach { allZipFiles.add(it) }
+                }
             }
             
-            // Scan SatenDroid folder
-            if (satendroidDir.exists()) {
-                satendroidDir.walkTopDown().filter { file ->
-                    file.extension.lowercase() == "zip"
-                }.forEach { allZipFiles.add(it) }
+            // Also scan public Downloads directory (for files downloaded by other apps)
+            try {
+                val publicDownloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                if (publicDownloadsDir != null && publicDownloadsDir.exists()) {
+                    println("DEBUG: Scanning public downloads dir: ${publicDownloadsDir.absolutePath}")
+                    
+                    // Scan public Downloads root
+                    publicDownloadsDir.listFiles { file ->
+                        file.extension.lowercase() == "zip"
+                    }?.let { allZipFiles.addAll(it) }
+                    
+                    // Scan public SatenDroid folder
+                    val publicSatenDroidDir = File(publicDownloadsDir, "SatenDroid")
+                    if (publicSatenDroidDir.exists()) {
+                        publicSatenDroidDir.walkTopDown().filter { file ->
+                            file.extension.lowercase() == "zip"
+                        }.forEach { allZipFiles.add(it) }
+                    }
+                }
+            } catch (e: Exception) {
+                println("DEBUG: Cannot access public downloads directory: ${e.message}")
+                // Continue without public directory access
             }
             
-            localZipFiles = allZipFiles.sortedByDescending { it.lastModified() }
+            // Remove duplicates and sort
+            localZipFiles = allZipFiles.distinctBy { it.absolutePath }.sortedByDescending { it.lastModified() }
+            println("DEBUG: Found ${localZipFiles.size} ZIP files total")
+            
         } catch (e: Exception) {
             println("DEBUG: Error scanning for ZIP files: ${e.message}")
+            e.printStackTrace()
         } finally {
             isRefreshing = false
         }
@@ -558,20 +589,37 @@ private fun DropboxScreen(
                 isLoadingFiles = true
                 downloadMessage = "Downloading ${item.name}..."
                 
-                // Use Downloads/SatenDroid directory
-                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                val satenDroidDir = File(downloadsDir, "SatenDroid")
+                // Use app-specific external files directory (reliable access)
+                val appDownloadsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                    ?: context.filesDir // Fallback to internal storage
+                
+                val satenDroidDir = File(appDownloadsDir, "SatenDroid")
+                
+                // Create directory with detailed error checking
                 if (!satenDroidDir.exists()) {
-                    satenDroidDir.mkdirs()
+                    val created = satenDroidDir.mkdirs()
+                    println("DEBUG: Directory creation result: $created")
+                    println("DEBUG: Directory path: ${satenDroidDir.absolutePath}")
+                    println("DEBUG: Directory exists after creation: ${satenDroidDir.exists()}")
+                    
+                    if (!created && !satenDroidDir.exists()) {
+                        throw Exception("Failed to create download directory: ${satenDroidDir.absolutePath}")
+                    }
                 }
                 
                 val localFile = File(satenDroidDir, item.name)
+                println("DEBUG: Downloading to: ${localFile.absolutePath}")
+                
+                // Check if parent directory is writable
+                if (!satenDroidDir.canWrite()) {
+                    throw Exception("Cannot write to directory: ${satenDroidDir.absolutePath}")
+                }
                 
                 withContext(Dispatchers.IO) {
                     client.files().download(item.path).download(localFile.outputStream())
                 }
                 
-                downloadMessage = "✅ Downloaded: ${item.name}\nSaved to: Downloads/SatenDroid/"
+                downloadMessage = "✅ Downloaded: ${item.name}\nSaved to: ${localFile.absolutePath}"
                 println("DEBUG: Downloaded ${item.name} to ${localFile.absolutePath}")
                 
             } catch (e: Exception) {
@@ -598,17 +646,38 @@ private fun DropboxScreen(
                 val folderName = if (currentPath.isEmpty()) "Root" else currentPath.substringAfterLast("/")
                 downloadMessage = "Downloading ${zipFiles.size} files from folder: $folderName..."
                 
-                // Use Downloads/SatenDroid directory
-                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                val satenDroidDir = File(downloadsDir, "SatenDroid")
+                // Use app-specific external files directory (reliable access)
+                val appDownloadsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                    ?: context.filesDir // Fallback to internal storage
+                
+                val satenDroidDir = File(appDownloadsDir, "SatenDroid")
+                
+                // Create base directory with detailed error checking
                 if (!satenDroidDir.exists()) {
-                    satenDroidDir.mkdirs()
+                    val created = satenDroidDir.mkdirs()
+                    println("DEBUG: Base directory creation result: $created")
+                    println("DEBUG: Base directory path: ${satenDroidDir.absolutePath}")
+                    
+                    if (!created && !satenDroidDir.exists()) {
+                        throw Exception("Failed to create base directory: ${satenDroidDir.absolutePath}")
+                    }
                 }
                 
                 // Create folder-specific directory
                 val folderDir = File(satenDroidDir, folderName)
                 if (!folderDir.exists()) {
-                    folderDir.mkdirs()
+                    val created = folderDir.mkdirs()
+                    println("DEBUG: Folder directory creation result: $created")
+                    println("DEBUG: Folder directory path: ${folderDir.absolutePath}")
+                    
+                    if (!created && !folderDir.exists()) {
+                        throw Exception("Failed to create folder directory: ${folderDir.absolutePath}")
+                    }
+                }
+                
+                // Check if directories are writable
+                if (!folderDir.canWrite()) {
+                    throw Exception("Cannot write to folder directory: ${folderDir.absolutePath}")
                 }
                 
                 var successCount = 0
@@ -619,17 +688,25 @@ private fun DropboxScreen(
                         downloadMessage = "Downloading (${index + 1}/${zipFiles.size}): ${zipFile.name}..."
                         
                         val localFile = File(folderDir, zipFile.name)
+                        println("DEBUG: Downloading ${zipFile.name} to: ${localFile.absolutePath}")
                         
                         withContext(Dispatchers.IO) {
                             client.files().download(zipFile.path).download(localFile.outputStream())
                         }
                         
-                        successCount++
-                        println("DEBUG: Downloaded ${zipFile.name} to ${localFile.absolutePath}")
+                        // Verify file was created
+                        if (localFile.exists() && localFile.length() > 0) {
+                            successCount++
+                            println("DEBUG: Successfully downloaded ${zipFile.name} (${localFile.length()} bytes)")
+                        } else {
+                            failCount++
+                            println("DEBUG: File was not created or is empty: ${localFile.absolutePath}")
+                        }
                         
                     } catch (e: Exception) {
                         failCount++
                         println("DEBUG: Failed to download ${zipFile.name}: ${e.message}")
+                        e.printStackTrace()
                     }
                 }
                 
@@ -637,7 +714,7 @@ private fun DropboxScreen(
                         "Folder: $folderName\n" +
                         "Success: $successCount files\n" +
                         "Failed: $failCount files\n" +
-                        "Saved to: Downloads/SatenDroid/$folderName/"
+                        "Saved to: ${folderDir.absolutePath}"
                 
             } catch (e: Exception) {
                 downloadMessage = "❌ Folder download failed: ${e.message}"
