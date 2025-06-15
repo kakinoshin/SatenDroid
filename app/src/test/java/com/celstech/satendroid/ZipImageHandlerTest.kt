@@ -40,8 +40,8 @@ class ZipImageHandlerTest {
         )
         
         // Call the method
-        zipImageHandler.clearExtractedFiles(testFiles)
-        
+        zipImageHandler.clearExtractedFiles(mockContext, testFiles)
+
         // Verify all files were deleted (would need to adapt for actual verification)
         // This is just a placeholder test structure
     }

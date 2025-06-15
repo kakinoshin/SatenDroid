@@ -1,23 +1,59 @@
 package com.celstech.satendroid.ui.components
 
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
+import android.provider.Settings
+import android.content.Intent
+import android.content.Context
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -71,7 +107,7 @@ fun ImageViewerScreen() {
             
             // Clear previous extracted files if any
             if (imageFiles.isNotEmpty()) {
-                zipImageHandler.clearExtractedFiles(imageFiles)
+                zipImageHandler.clearExtractedFiles(context, imageFiles)
             }
 
             // Extract images from ZIP
@@ -104,7 +140,7 @@ fun ImageViewerScreen() {
     // Cleanup extracted files when component is disposed
     DisposableEffect(Unit) {
         onDispose {
-            zipImageHandler.clearExtractedFiles(imageFiles)
+            zipImageHandler.clearExtractedFiles(context, imageFiles)
         }
     }
 
@@ -115,7 +151,7 @@ fun ImageViewerScreen() {
                     isLoading = true
                     // Clear previous extracted files if any
                     if (imageFiles.isNotEmpty()) {
-                        zipImageHandler.clearExtractedFiles(imageFiles)
+                        zipImageHandler.clearExtractedFiles(context, imageFiles)
                     }
                     
                     coroutineScope.launch {
@@ -152,7 +188,7 @@ fun ImageViewerScreen() {
                 showTopBar = showTopBar,
                 onToggleTopBar = { showTopBar = !showTopBar },
                 onBackToFiles = { 
-                    zipImageHandler.clearExtractedFiles(imageFiles)
+                    zipImageHandler.clearExtractedFiles(context, imageFiles)
                     imageFiles = emptyList()
                     currentView = ViewState.LocalFileList 
                 }
@@ -198,7 +234,8 @@ private fun LocalFileListScreen(
     var selectedItems by remember { mutableStateOf<Set<LocalItem>>(emptySet()) }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
     var itemToDelete by remember { mutableStateOf<LocalItem?>(null) }
-    
+    var showDeleteZipWithPermissionDialog by remember { mutableStateOf(false) }
+
     // Function to scan for ZIP files and folders in current directory
     fun scanDirectory(path: String = "") {
         isRefreshing = true
@@ -322,10 +359,51 @@ private fun LocalFileListScreen(
     
     // Delete functions
     fun deleteFile(item: LocalItem.ZipFile): Boolean {
-        return try {
-            item.file.delete()
+        try {
+            if (item.file.delete()) {
+                return true
+            }
+        } catch (e: SecurityException) {
+            // 続行してMediaStore経由で削除を試みる
         } catch (e: Exception) {
             println("DEBUG: Failed to delete file: ${e.message}")
+            return false
+        }
+        // MediaStore経由でUriを検索して削除（Android 10以降はDATA列が無効な場合があるので、display_nameとサイズで検索も試みる）
+        return try {
+            val filePath = item.file.absolutePath
+            val fileName = item.file.name
+            val fileSize = item.file.length()
+            val contentResolver = context.contentResolver
+            val uriExternal = android.provider.MediaStore.Files.getContentUri("external")
+            val projection = arrayOf(android.provider.MediaStore.MediaColumns._ID)
+            // まずDATA列で検索
+            var selection = android.provider.MediaStore.MediaColumns.DATA + "=?"
+            var selectionArgs = arrayOf(filePath)
+            var cursor = contentResolver.query(uriExternal, projection, selection, selectionArgs, null)
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    val id = it.getLong(it.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns._ID))
+                    val uri = android.content.ContentUris.withAppendedId(uriExternal, id)
+                    val rowsDeleted = contentResolver.delete(uri, null, null)
+                    if (rowsDeleted > 0) return true
+                }
+            }
+            // DATA列で見つからない場合、display_nameとサイズで検索
+            selection = android.provider.MediaStore.MediaColumns.DISPLAY_NAME + "=? AND " + android.provider.MediaStore.MediaColumns.SIZE + "=?"
+            selectionArgs = arrayOf(fileName, fileSize.toString())
+            cursor = contentResolver.query(uriExternal, projection, selection, selectionArgs, null)
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    val id = it.getLong(it.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns._ID))
+                    val uri = android.content.ContentUris.withAppendedId(uriExternal, id)
+                    val rowsDeleted = contentResolver.delete(uri, null, null)
+                    if (rowsDeleted > 0) return true
+                }
+            }
+            false
+        } catch (ex: Exception) {
+            println("DEBUG: Failed to delete file via MediaStore: ${ex.message}")
             false
         }
     }
@@ -628,21 +706,21 @@ private fun LocalFileListScreen(
         // Delete confirmation dialog
         if (showDeleteConfirmDialog) {
             AlertDialog(
-                onDismissRequest = { 
+                onDismissRequest = {
                     showDeleteConfirmDialog = false
                     itemToDelete = null
                 },
-                title = { 
+                title = {
                     Text(
                         text = if (itemToDelete != null) "Delete Item?" else "Delete ${selectedItems.size} Items?"
-                    ) 
+                    )
                 },
-                text = { 
+                text = {
                     Text(
                         text = if (itemToDelete != null) {
                             when (itemToDelete) {
                                 is LocalItem.Folder -> "Are you sure you want to delete the folder '${itemToDelete!!.name}' and all its contents?"
-                                is LocalItem.ZipFile -> "Are you sure you want to delete '${itemToDelete!!.name}'?"
+                                is LocalItem.ZipFile -> "Are you sure you want to delete the file '${itemToDelete!!.name}'? This action cannot be undone."
                                 else -> ""
                             }
                         } else {
@@ -654,21 +732,28 @@ private fun LocalFileListScreen(
                     Button(
                         onClick = {
                             if (itemToDelete != null) {
-                                // Single item delete
-                                val success = when (val item = itemToDelete!!) {
-                                    is LocalItem.ZipFile -> deleteFile(item)
-                                    is LocalItem.Folder -> deleteFolder(item)
+                                when (val item = itemToDelete!!) {
+                                    is LocalItem.Folder -> {
+                                        val success = deleteFolder(item)
+                                        if (!success) {
+                                            println("DEBUG: Failed to delete "+itemToDelete!!.name)
+                                        }
+                                        itemToDelete = null
+                                        scanDirectory(currentPath)
+                                        showDeleteConfirmDialog = false
+                                    }
+                                    is LocalItem.ZipFile -> {
+                                        // ZIPファイルは権限付き削除
+                                        // Composable関数はここで直接呼べないので、フラグを立ててCompose側で処理する
+                                        itemToDelete = item
+                                        showDeleteConfirmDialog = false
+                                        showDeleteZipWithPermissionDialog = true
+                                    }
                                 }
-                                if (!success) {
-                                    println("DEBUG: Failed to delete ${itemToDelete!!.name}")
-                                }
-                                itemToDelete = null
-                                scanDirectory(currentPath)
                             } else {
-                                // Multiple items delete
                                 deleteSelectedItems()
+                                showDeleteConfirmDialog = false
                             }
-                            showDeleteConfirmDialog = false
                         },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.error
@@ -679,13 +764,27 @@ private fun LocalFileListScreen(
                 },
                 dismissButton = {
                     TextButton(
-                        onClick = { 
+                        onClick = {
                             showDeleteConfirmDialog = false
                             itemToDelete = null
                         }
                     ) {
                         Text("Cancel")
                     }
+                }
+            )
+        }
+        // ZIPファイル削除用の権限付きダイアログ
+        if (showDeleteZipWithPermissionDialog && itemToDelete is LocalItem.ZipFile) {
+            DeleteFileWithPermission(
+                item = itemToDelete as LocalItem.ZipFile,
+                onDeleteResult = { success ->
+                    if (!success) {
+                        println("DEBUG: Failed to delete "+itemToDelete!!.name)
+                    }
+                    itemToDelete = null
+                    showDeleteZipWithPermissionDialog = false
+                    scanDirectory(currentPath)
                 }
             )
         }
@@ -787,7 +886,9 @@ private fun LocalItemCard(
                 Row {
                     // Delete button
                     IconButton(
-                        onClick = onDeleteClick
+                        onClick = {
+                            onDeleteClick()
+                        }
                     ) {
                         Icon(
                             imageVector = Icons.Default.Delete,
@@ -1085,6 +1186,7 @@ private fun DropboxScreen(
                 val totalBytes = zipFiles.sumOf { it.size }
                 downloadProgress = DownloadProgress(
                     fileName = "Preparing download...",
+                    currentFileIndex = 0,
                     totalFiles = zipFiles.size,
                     totalBytes = totalBytes
                 )
@@ -1755,6 +1857,16 @@ private fun DropboxScreen(
     }
 }
 
+// MANAGE_EXTERNAL_STORAGE権限リクエスト用
+fun requestManageAllFilesPermission(context: Context) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !android.os.Environment.isExternalStorageManager()) {
+        val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+        intent.addCategory("android.intent.category.DEFAULT")
+        intent.data = Uri.parse("package:" + context.packageName)
+        context.startActivity(intent)
+    }
+}
+
 // Helper functions
 private fun formatFileSize(bytes: Long): String {
     val kb = bytes / 1024.0
@@ -1799,5 +1911,94 @@ private fun formatTime(seconds: Double): String {
         hours > 0 -> "${hours}h ${minutes}m"
         minutes > 0 -> "${minutes}m ${secs}s"
         else -> "${secs}s"
+    }
+}
+
+@Composable
+private fun DeleteFileWithPermission(
+    item: LocalItem.ZipFile,
+    onDeleteResult: (Boolean) -> Unit
+) {
+    val context = LocalContext.current
+    var permissionRequested by remember { mutableStateOf(false) }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+        if (isGranted) {
+            onDeleteResult(deleteFileWithPermission(context, item))
+        } else {
+            onDeleteResult(false)
+        }
+    }
+    LaunchedEffect(Unit) {
+        val hasPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Environment.isExternalStorageManager()
+        } else {
+            ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) == PackageManager.PERMISSION_GRANTED
+        }
+        if (hasPermission) {
+            onDeleteResult(deleteFileWithPermission(context, item))
+        } else if (!permissionRequested) {
+            permissionRequested = true
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                intent.data = Uri.parse("package:" + context.packageName)
+                context.startActivity(intent)
+                onDeleteResult(false)
+            } else {
+                launcher.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            }
+        } else {
+            onDeleteResult(false)
+        }
+    }
+}
+
+private fun deleteFileWithPermission(context: Context, item: LocalItem.ZipFile): Boolean {
+    try {
+        if (item.file.delete()) {
+            return true
+        }
+    } catch (e: SecurityException) {
+        // 続行してMediaStore経由で削除を試みる
+    } catch (e: Exception) {
+        return false
+    }
+    // MediaStore経由でUriを検索して削除
+    return try {
+        val filePath = item.file.absolutePath
+        val fileName = item.file.name
+        val fileSize = item.file.length()
+        val contentResolver = context.contentResolver
+        val uriExternal = android.provider.MediaStore.Files.getContentUri("external")
+        val projection = arrayOf(android.provider.MediaStore.MediaColumns._ID)
+        // まずDATA列で検索
+        var selection = android.provider.MediaStore.MediaColumns.DATA + "=?"
+        var selectionArgs = arrayOf(filePath)
+        var cursor = contentResolver.query(uriExternal, projection, selection, selectionArgs, null)
+        cursor?.use {
+            if (it.moveToFirst()) {
+                val id = it.getLong(it.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns._ID))
+                val uri = android.content.ContentUris.withAppendedId(uriExternal, id)
+                val rowsDeleted = contentResolver.delete(uri, null, null)
+                if (rowsDeleted > 0) return true
+            }
+        }
+        // DATA列で見つからない場合、display_nameとサイズで検索
+        selection = android.provider.MediaStore.MediaColumns.DISPLAY_NAME + "=? AND " + android.provider.MediaStore.MediaColumns.SIZE + "=?"
+        selectionArgs = arrayOf(fileName, fileSize.toString())
+        cursor = contentResolver.query(uriExternal, projection, selection, selectionArgs, null)
+        cursor?.use {
+            if (it.moveToFirst()) {
+                val id = it.getLong(it.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns._ID))
+                val uri = android.content.ContentUris.withAppendedId(uriExternal, id)
+                val rowsDeleted = contentResolver.delete(uri, null, null)
+                if (rowsDeleted > 0) return true
+            }
+        }
+        false
+    } catch (e: Exception) {
+        false
     }
 }

@@ -2,6 +2,7 @@ package com.celstech.satendroid.utils
 
 import android.content.Context
 import android.net.Uri
+import android.provider.MediaStore
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -50,15 +51,64 @@ class ZipImageHandler(private val context: Context) {
     }
 
     // Clean up extracted temporary files
-    fun clearExtractedFiles(files: List<File>) {
+    fun clearExtractedFiles(context: Context, files: List<File>) {
+        android.util.Log.e("ZipImageHandler", "[START] clearExtractedFiles: files=${files.map { it.absolutePath }}")
+        if (files.isEmpty()) {
+            android.util.Log.w("ZipImageHandler", "[WARN] clearExtractedFiles: files is empty!")
+        }
         files.forEach { file ->
             try {
+                android.util.Log.e("ZipImageHandler", "[TRY] Delete: ${file.absolutePath} exists=${file.exists()} canRead=${file.canRead()} canWrite=${file.canWrite()}")
                 if (file.exists()) {
-                    file.delete()
+                    if (file.absolutePath.startsWith("/storage/emulated/0/")) {
+                        val uri = getFileUri(context, file)
+                        android.util.Log.e("ZipImageHandler", "[INFO] getFileUri result: $uri")
+                        if (uri != null) {
+                            val rows = context.contentResolver.delete(uri, null, null)
+                            android.util.Log.e("ZipImageHandler", "[INFO] contentResolver.delete rows: $rows")
+                            if (rows == 0) {
+                                val values = android.content.ContentValues().apply {
+                                    put(MediaStore.MediaColumns.DATA, file.absolutePath)
+                                }
+                                val insertedUri = context.contentResolver.insert(MediaStore.Files.getContentUri("external"), values)
+                                android.util.Log.e("ZipImageHandler", "[INFO] insertedUri: $insertedUri")
+                                if (insertedUri != null) {
+                                    val delRows = context.contentResolver.delete(insertedUri, null, null)
+                                    android.util.Log.e("ZipImageHandler", "[INFO] delete after insert rows: $delRows")
+                                } else {
+                                    android.util.Log.e("ZipImageHandler", "[ERROR] Failed to insert file into MediaStore: ${file.absolutePath}")
+                                }
+                            }
+                        } else {
+                            val deleted = file.delete()
+                            android.util.Log.e("ZipImageHandler", "[INFO] file.delete() result: $deleted")
+                        }
+                    } else {
+                        val deleted = file.delete()
+                        android.util.Log.e("ZipImageHandler", "[INFO] file.delete() result: $deleted")
+                    }
+                } else {
+                    android.util.Log.w("ZipImageHandler", "[WARN] File does not exist: ${file.absolutePath}")
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                android.util.Log.e("ZipImageHandler", "[EXCEPTION] Failed to delete: ${file.absolutePath}", e)
             }
         }
+        android.util.Log.e("ZipImageHandler", "[END] clearExtractedFiles")
+    }
+
+    // ファイルのUriを取得するヘルパー
+    private fun getFileUri(context: Context, file: File): Uri? {
+        val projection = arrayOf(MediaStore.Files.FileColumns._ID)
+        val selection = MediaStore.Files.FileColumns.DATA + " = ?"
+        val selectionArgs = arrayOf(file.absolutePath)
+        val uriExternal = MediaStore.Files.getContentUri("external")
+        context.contentResolver.query(uriExternal, projection, selection, selectionArgs, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID))
+                return Uri.withAppendedPath(uriExternal, id.toString())
+            }
+        }
+        return null
     }
 }
