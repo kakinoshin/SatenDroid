@@ -13,12 +13,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -186,75 +184,127 @@ private fun LocalFileListScreen(
     isLoading: Boolean
 ) {
     val context = LocalContext.current
-    var localZipFiles by remember { mutableStateOf<List<File>>(emptyList()) }
+    var localItems by remember { mutableStateOf<List<LocalItem>>(emptyList()) }
     var isRefreshing by remember { mutableStateOf(false) }
+    var currentPath by remember { mutableStateOf("") }
+    var pathHistory by remember { mutableStateOf<List<String>>(emptyList()) }
     
-    // Function to scan for ZIP files in Downloads folder
-    fun scanForZipFiles() {
+    // Function to scan for ZIP files and folders in current directory
+    fun scanDirectory(path: String = "") {
         isRefreshing = true
         
         try {
-            val allZipFiles = mutableListOf<File>()
+            val allItems = mutableListOf<LocalItem>()
             
-            // Scan app-specific external files directory (main location)
+            // Get base directories to scan
+            val baseDirectories = mutableListOf<File>()
+            
+            // App-specific external files directory (main location)
             val appDownloadsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
             if (appDownloadsDir != null && appDownloadsDir.exists()) {
-                println("DEBUG: Scanning app downloads dir: ${appDownloadsDir.absolutePath}")
-                
-                // Scan root directory
-                appDownloadsDir.listFiles { file ->
-                    file.extension.lowercase() == "zip"
-                }?.let { allZipFiles.addAll(it) }
-                
-                // Scan SatenDroid subdirectory
-                val satenDroidDir = File(appDownloadsDir, "SatenDroid")
-                if (satenDroidDir.exists()) {
-                    println("DEBUG: Scanning SatenDroid dir: ${satenDroidDir.absolutePath}")
-                    satenDroidDir.walkTopDown().filter { file ->
-                        file.extension.lowercase() == "zip"
-                    }.forEach { allZipFiles.add(it) }
-                }
+                baseDirectories.add(appDownloadsDir)
             }
             
-            // Also scan public Downloads directory (for files downloaded by other apps)
+            // Public Downloads directory (for files downloaded by other apps)
             try {
                 val publicDownloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
                 if (publicDownloadsDir != null && publicDownloadsDir.exists()) {
-                    println("DEBUG: Scanning public downloads dir: ${publicDownloadsDir.absolutePath}")
-                    
-                    // Scan public Downloads root
-                    publicDownloadsDir.listFiles { file ->
-                        file.extension.lowercase() == "zip"
-                    }?.let { allZipFiles.addAll(it) }
-                    
-                    // Scan public SatenDroid folder
-                    val publicSatenDroidDir = File(publicDownloadsDir, "SatenDroid")
-                    if (publicSatenDroidDir.exists()) {
-                        publicSatenDroidDir.walkTopDown().filter { file ->
-                            file.extension.lowercase() == "zip"
-                        }.forEach { allZipFiles.add(it) }
-                    }
+                    baseDirectories.add(publicDownloadsDir)
                 }
             } catch (e: Exception) {
                 println("DEBUG: Cannot access public downloads directory: ${e.message}")
-                // Continue without public directory access
             }
             
-            // Remove duplicates and sort
-            localZipFiles = allZipFiles.distinctBy { it.absolutePath }.sortedByDescending { it.lastModified() }
-            println("DEBUG: Found ${localZipFiles.size} ZIP files total")
+            // Scan the specified path within each base directory
+            for (baseDir in baseDirectories) {
+                val targetDir = if (path.isEmpty()) baseDir else File(baseDir, path)
+                
+                if (!targetDir.exists() || !targetDir.isDirectory) continue
+                
+                println("DEBUG: Scanning directory: ${targetDir.absolutePath}")
+                
+                // Get direct children of the target directory
+                val children = targetDir.listFiles() ?: continue
+                
+                for (child in children) {
+                    when {
+                        child.isDirectory -> {
+                            // Count ZIP files in this directory
+                            val zipCount = child.walkTopDown()
+                                .filter { it.isFile && it.extension.lowercase() == "zip" }
+                                .count()
+                            
+                            if (zipCount > 0) {
+                                val relativePath = if (path.isEmpty()) 
+                                    child.name 
+                                else 
+                                    "$path/${child.name}"
+                                
+                                allItems.add(
+                                    LocalItem.Folder(
+                                        name = child.name,
+                                        path = relativePath,
+                                        lastModified = child.lastModified(),
+                                        zipCount = zipCount
+                                    )
+                                )
+                            }
+                        }
+                        child.isFile && child.extension.lowercase() == "zip" -> {
+                            val relativePath = if (path.isEmpty()) 
+                                child.name 
+                            else 
+                                "$path/${child.name}"
+                            
+                            allItems.add(
+                                LocalItem.ZipFile(
+                                    name = child.name,
+                                    path = relativePath,
+                                    lastModified = child.lastModified(),
+                                    size = child.length(),
+                                    file = child
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+            
+            // Remove duplicates by path and sort
+            localItems = allItems
+                .distinctBy { it.path }
+                .sortedWith(compareBy<LocalItem> { it !is LocalItem.Folder }.thenBy { it.name })
+            
+            println("DEBUG: Found ${localItems.size} items in path '$path'")
             
         } catch (e: Exception) {
-            println("DEBUG: Error scanning for ZIP files: ${e.message}")
+            println("DEBUG: Error scanning directory '$path': ${e.message}")
             e.printStackTrace()
         } finally {
             isRefreshing = false
         }
     }
     
+    // Function to navigate into a folder
+    fun navigateToFolder(folderPath: String) {
+        pathHistory = pathHistory + currentPath
+        currentPath = folderPath
+        scanDirectory(folderPath)
+    }
+    
+    // Function to navigate back
+    fun navigateBack() {
+        if (pathHistory.isNotEmpty()) {
+            val previousPath = pathHistory.last()
+            pathHistory = pathHistory.dropLast(1)
+            currentPath = previousPath
+            scanDirectory(previousPath)
+        }
+    }
+    
     // Scan for files on first load
     LaunchedEffect(Unit) {
-        scanForZipFiles()
+        scanDirectory("")
     }
     
     Column(
@@ -302,20 +352,29 @@ private fun LocalFileListScreen(
         
         Spacer(modifier = Modifier.height(24.dp))
         
-        // Local files section
+        // Navigation bar
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (currentPath.isNotEmpty()) {
+                Button(
+                    onClick = { navigateBack() },
+                    modifier = Modifier.padding(end = 8.dp)
+                ) {
+                    Text("← Back")
+                }
+            }
+            
             Text(
-                text = "Local ZIP Files",
+                text = if (currentPath.isEmpty()) "📁 Local Files" else "📁 $currentPath",
                 style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onBackground
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.weight(1f)
             )
             
             TextButton(
-                onClick = { scanForZipFiles() },
+                onClick = { scanDirectory(currentPath) },
                 enabled = !isRefreshing
             ) {
                 Text("🔄 Refresh")
@@ -350,12 +409,12 @@ private fun LocalFileListScreen(
                     ) {
                         CircularProgressIndicator()
                         Spacer(modifier = Modifier.height(8.dp))
-                        Text("Scanning for ZIP files...")
+                        Text("Scanning for files...")
                     }
                 }
             }
             
-            localZipFiles.isEmpty() -> {
+            localItems.isEmpty() -> {
                 Card(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     colors = CardDefaults.cardColors(
@@ -374,7 +433,7 @@ private fun LocalFileListScreen(
                         )
                         
                         Text(
-                            text = "No ZIP files found",
+                            text = if (currentPath.isEmpty()) "No ZIP files found" else "Empty folder",
                             style = MaterialTheme.typography.titleMedium,
                             textAlign = TextAlign.Center
                         )
@@ -382,7 +441,10 @@ private fun LocalFileListScreen(
                         Spacer(modifier = Modifier.height(8.dp))
                         
                         Text(
-                            text = "Download ZIP files from Dropbox or select from your device to get started",
+                            text = if (currentPath.isEmpty()) 
+                                "Download ZIP files from Dropbox or select from your device to get started"
+                            else 
+                                "This folder doesn't contain any ZIP files",
                             style = MaterialTheme.typography.bodyMedium,
                             textAlign = TextAlign.Center,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
@@ -396,10 +458,15 @@ private fun LocalFileListScreen(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(localZipFiles) { file ->
-                        ZipFileCard(
-                            file = file,
-                            onClick = { onFileSelected(file) }
+                    items(localItems) { item ->
+                        LocalItemCard(
+                            item = item,
+                            onClick = { 
+                                when (item) {
+                                    is LocalItem.Folder -> navigateToFolder(item.path)
+                                    is LocalItem.ZipFile -> onFileSelected(item.file)
+                                }
+                            }
                         )
                     }
                 }
@@ -409,8 +476,8 @@ private fun LocalFileListScreen(
 }
 
 @Composable
-private fun ZipFileCard(
-    file: File,
+private fun LocalItemCard(
+    item: LocalItem,
     onClick: () -> Unit
 ) {
     Card(
@@ -418,7 +485,10 @@ private fun ZipFileCard(
             .fillMaxWidth()
             .clickable { onClick() },
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
+            containerColor = when (item) {
+                is LocalItem.Folder -> MaterialTheme.colorScheme.primaryContainer
+                is LocalItem.ZipFile -> MaterialTheme.colorScheme.surface
+            }
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
@@ -429,7 +499,10 @@ private fun ZipFileCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "🗜️",
+                text = when (item) {
+                    is LocalItem.Folder -> "📁"
+                    is LocalItem.ZipFile -> "🗜️"
+                },
                 style = MaterialTheme.typography.headlineMedium,
                 modifier = Modifier.padding(end = 16.dp)
             )
@@ -438,26 +511,46 @@ private fun ZipFileCard(
                 modifier = Modifier.weight(1f)
             ) {
                 Text(
-                    text = file.name,
+                    text = item.name,
                     style = MaterialTheme.typography.bodyLarge,
                     maxLines = 2
                 )
                 
-                Text(
-                    text = "${formatFileSize(file.length())} • ${formatDate(file.lastModified())}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                )
-                
-                Text(
-                    text = file.parent ?: "Unknown location",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                )
+                when (item) {
+                    is LocalItem.Folder -> {
+                        Text(
+                            text = "${item.zipCount} ZIP file${if (item.zipCount != 1) "s" else ""} • ${formatDate(item.lastModified)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                        
+                        Text(
+                            text = "Folder • Tap to open",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        )
+                    }
+                    is LocalItem.ZipFile -> {
+                        Text(
+                            text = "${formatFileSize(item.size)} • ${formatDate(item.lastModified)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                        
+                        Text(
+                            text = item.file.parent ?: "Unknown location",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        )
+                    }
+                }
             }
             
             Text(
-                text = "▶",
+                text = when (item) {
+                    is LocalItem.Folder -> "📂"
+                    is LocalItem.ZipFile -> "▶"
+                },
                 style = MaterialTheme.typography.headlineSmall,
                 color = MaterialTheme.colorScheme.primary
             )
@@ -583,6 +676,28 @@ private data class DownloadProgress(
     val progressText: String get() = 
         if (totalFiles <= 1) "${(currentFileProgress * 100).toInt()}%"
         else "File ${currentFileIndex + 1}/$totalFiles (${(overallProgress * 100).toInt()}%)"
+}
+
+// Sealed class to represent local file system items
+private sealed class LocalItem {
+    abstract val name: String
+    abstract val path: String
+    abstract val lastModified: Long
+    
+    data class Folder(
+        override val name: String,
+        override val path: String,
+        override val lastModified: Long,
+        val zipCount: Int = 0
+    ) : LocalItem()
+    
+    data class ZipFile(
+        override val name: String,
+        override val path: String,
+        override val lastModified: Long,
+        val size: Long,
+        val file: File
+    ) : LocalItem()
 }
 
 @Composable
@@ -1119,7 +1234,7 @@ private fun DropboxScreen(
                                         
                                         // Progress bar
                                         LinearProgressIndicator(
-                                            progress = downloadProgress.overallProgress,
+                                            progress = { downloadProgress.overallProgress },
                                             modifier = Modifier.fillMaxWidth(),
                                             color = MaterialTheme.colorScheme.primary,
                                             trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
