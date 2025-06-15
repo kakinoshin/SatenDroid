@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "SatEndroid"
+rootProject.name = "SatenDroid"
 include(":app")

@@ -85,7 +85,7 @@ class DropboxAuthManager(private val context: Context) {
         println("DEBUG: Creating authenticated client with token: ${accessToken.take(8)}...")
         try {
             val credential = DbxCredential(accessToken, expiresAt, refreshToken, APP_KEY)
-            val requestConfig = DbxRequestConfig.newBuilder("SatEnDroid/1.0").build()
+            val requestConfig = DbxRequestConfig.newBuilder("SatenDroid/1.0").build()
             dropboxClient = DbxClientV2(requestConfig, credential)
             _authState.value = DropboxAuthState.Authenticated(dropboxClient!!)
             println("DEBUG: Authenticated client created successfully")

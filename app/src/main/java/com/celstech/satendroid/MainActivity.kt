@@ -14,7 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
 import com.celstech.satendroid.dropbox.DropboxAuthManager
 import com.celstech.satendroid.ui.components.ImageViewerScreen
-import com.celstech.satendroid.ui.theme.SatEndroidTheme
+import com.celstech.satendroid.ui.theme.SatenDroidTheme
 import kotlinx.coroutines.launch
 
 // Global composition local for DropboxAuthManager
@@ -36,7 +36,7 @@ class MainActivity : ComponentActivity() {
         handleOAuthRedirect(intent)
         
         setContent {
-            SatEndroidTheme {
+            SatenDroidTheme {
                 CompositionLocalProvider(LocalDropboxAuthManager provides dropboxAuthManager) {
                     Surface(
                         modifier = Modifier.fillMaxSize(),

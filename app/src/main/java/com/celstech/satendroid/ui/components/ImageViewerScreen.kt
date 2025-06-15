@@ -1,6 +1,7 @@
 package com.celstech.satendroid.ui.components
 
 import android.net.Uri
+import android.os.Environment
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -43,18 +44,16 @@ fun ImageViewerScreen() {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
-    // State to hold extracted image files
+    // Main state for the current view
+    var currentView by remember { mutableStateOf<ViewState>(ViewState.LocalFileList) }
+    
+    // State for image viewing
     var imageFiles by remember { mutableStateOf<List<File>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
-    var showFileSelector by remember { mutableStateOf(false) }
     var showTopBar by remember { mutableStateOf(false) }
-    var showDropboxScreen by remember { mutableStateOf(false) }
 
     // Zip image handler
     val zipImageHandler = remember { ZipImageHandler(context) }
-
-    // Dropbox authentication manager
-    val dropboxAuthManager = LocalDropboxAuthManager.current
 
     // Permission state for external storage
     val storagePermissionState = rememberPermissionState(
@@ -67,7 +66,6 @@ fun ImageViewerScreen() {
     ) { uri: Uri? ->
         uri?.let {
             isLoading = true
-            showFileSelector = false
             
             // Clear previous extracted files if any
             if (imageFiles.isNotEmpty()) {
@@ -78,6 +76,9 @@ fun ImageViewerScreen() {
             coroutineScope.launch {
                 try {
                     imageFiles = zipImageHandler.extractImagesFromZip(uri)
+                    if (imageFiles.isNotEmpty()) {
+                        currentView = ViewState.ImageViewer
+                    }
                 } catch (e: Exception) {
                     // Handle error silently for now
                 } finally {
@@ -87,7 +88,7 @@ fun ImageViewerScreen() {
         }
     }
 
-    // Pager state
+    // Pager state for image viewing
     val pagerState = rememberPagerState { imageFiles.size }
 
     // Auto-hide top bar after 3 seconds when manually shown
@@ -105,289 +106,413 @@ fun ImageViewerScreen() {
         }
     }
 
-    Box(
+    when (currentView) {
+        is ViewState.LocalFileList -> {
+            LocalFileListScreen(
+                onFileSelected = { file ->
+                    isLoading = true
+                    // Clear previous extracted files if any
+                    if (imageFiles.isNotEmpty()) {
+                        zipImageHandler.clearExtractedFiles(imageFiles)
+                    }
+                    
+                    coroutineScope.launch {
+                        try {
+                            imageFiles = zipImageHandler.extractImagesFromZip(Uri.fromFile(file))
+                            if (imageFiles.isNotEmpty()) {
+                                currentView = ViewState.ImageViewer
+                            }
+                        } catch (e: Exception) {
+                            // Handle error
+                        } finally {
+                            isLoading = false
+                        }
+                    }
+                },
+                onOpenFromDevice = {
+                    if (storagePermissionState.status.isGranted) {
+                        zipPickerLauncher.launch("application/zip")
+                    } else {
+                        storagePermissionState.launchPermissionRequest()
+                    }
+                },
+                onOpenFromDropbox = {
+                    currentView = ViewState.DropboxBrowser
+                },
+                isLoading = isLoading
+            )
+        }
+        
+        is ViewState.ImageViewer -> {
+            ImageViewerScreen(
+                imageFiles = imageFiles,
+                pagerState = pagerState,
+                showTopBar = showTopBar,
+                onToggleTopBar = { showTopBar = !showTopBar },
+                onBackToFiles = { 
+                    zipImageHandler.clearExtractedFiles(imageFiles)
+                    imageFiles = emptyList()
+                    currentView = ViewState.LocalFileList 
+                }
+            )
+        }
+        
+        is ViewState.DropboxBrowser -> {
+            DropboxScreen(
+                dropboxAuthManager = LocalDropboxAuthManager.current,
+                onBackToLocal = { 
+                    currentView = ViewState.LocalFileList
+                },
+                onDismiss = { 
+                    currentView = ViewState.LocalFileList
+                }
+            )
+        }
+    }
+}
+
+// View state management
+private sealed class ViewState {
+    object LocalFileList : ViewState()
+    object ImageViewer : ViewState()
+    object DropboxBrowser : ViewState()
+}
+
+@Composable
+private fun LocalFileListScreen(
+    onFileSelected: (File) -> Unit,
+    onOpenFromDevice: () -> Unit,
+    onOpenFromDropbox: () -> Unit,
+    isLoading: Boolean
+) {
+    val context = LocalContext.current
+    var localZipFiles by remember { mutableStateOf<List<File>>(emptyList()) }
+    var isRefreshing by remember { mutableStateOf(false) }
+    
+    // Function to scan for ZIP files in Downloads folder
+    fun scanForZipFiles() {
+        isRefreshing = true
+        
+        try {
+            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val satendroidDir = File(downloadsDir, "SatenDroid")
+            
+            val allZipFiles = mutableListOf<File>()
+            
+            // Scan Downloads root
+            if (downloadsDir.exists()) {
+                downloadsDir.listFiles { file ->
+                    file.extension.lowercase() == "zip"
+                }?.let { allZipFiles.addAll(it) }
+            }
+            
+            // Scan SatenDroid folder
+            if (satendroidDir.exists()) {
+                satendroidDir.walkTopDown().filter { file ->
+                    file.extension.lowercase() == "zip"
+                }.forEach { allZipFiles.add(it) }
+            }
+            
+            localZipFiles = allZipFiles.sortedByDescending { it.lastModified() }
+        } catch (e: Exception) {
+            println("DEBUG: Error scanning for ZIP files: ${e.message}")
+        } finally {
+            isRefreshing = false
+        }
+    }
+    
+    // Scan for files on first load
+    LaunchedEffect(Unit) {
+        scanForZipFiles()
+    }
+    
+    Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black)
+            .background(MaterialTheme.colorScheme.background)
+            .padding(16.dp)
     ) {
+        // Header
+        Text(
+            text = "SatenDroid",
+            style = MaterialTheme.typography.headlineLarge,
+            color = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+        
+        Text(
+            text = "ZIP Image Viewer",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+            modifier = Modifier.padding(bottom = 24.dp)
+        )
+        
+        // Action buttons
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Button(
+                onClick = onOpenFromDevice,
+                modifier = Modifier.weight(1f),
+                enabled = !isLoading
+            ) {
+                Text("📱 Open from Device")
+            }
+            
+            OutlinedButton(
+                onClick = onOpenFromDropbox,
+                modifier = Modifier.weight(1f),
+                enabled = !isLoading
+            ) {
+                Text("☁️ Open from Dropbox")
+            }
+        }
+        
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        // Local files section
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Local ZIP Files",
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            
+            TextButton(
+                onClick = { scanForZipFiles() },
+                enabled = !isRefreshing
+            ) {
+                Text("🔄 Refresh")
+            }
+        }
+        
+        Spacer(modifier = Modifier.height(12.dp))
+        
         when {
-            // Loading state
             isLoading -> {
                 Box(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        CircularProgressIndicator(
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            text = "Extracting images...",
-                            color = Color.White,
-                            style = MaterialTheme.typography.bodyMedium
-                        )
+                        CircularProgressIndicator()
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Loading...")
                     }
                 }
             }
-
-            // Image viewer
-            imageFiles.isNotEmpty() -> {
-                // Full-screen image pager
-                HorizontalPager(
-                    state = pagerState,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clickable {
-                            // Toggle top bar visibility on image tap
-                            showTopBar = !showTopBar
-                        },
-                    key = { index -> imageFiles[index].absolutePath },
-                    userScrollEnabled = true
-                ) { index ->
-                    Image(
-                        painter = rememberAsyncImagePainter(model = imageFiles[index]),
-                        contentDescription = "Image ${index + 1}",
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Fit
-                    )
-                }
-
-                // Top clickable area for file selection and info toggle
+            
+            isRefreshing -> {
                 Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(120.dp)
-                        .clickable {
-                            if (showTopBar) {
-                                // If info is showing, open file selector
-                                showFileSelector = true
-                            } else {
-                                // If info is hidden, show info bar
-                                showTopBar = true
-                            }
-                        }
-                        .align(Alignment.TopCenter)
-                )
-
-                // Top bar with image info (manual toggle only)
-                if (showTopBar) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(
-                                Color.Black.copy(alpha = 0.8f)
-                            )
-                            .padding(16.dp)
-                            .align(Alignment.TopCenter)
-                    ) {
-                        Column {
-                            Text(
-                                text = "Image ${pagerState.currentPage + 1} of ${imageFiles.size}",
-                                color = Color.White,
-                                style = MaterialTheme.typography.bodyLarge,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            
-                            if (imageFiles.isNotEmpty() && pagerState.currentPage < imageFiles.size) {
-                                Text(
-                                    text = imageFiles[pagerState.currentPage].name,
-                                    color = Color.White.copy(alpha = 0.8f),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                            }
-                            
-                            Spacer(modifier = Modifier.height(8.dp))
-                            
-                            Text(
-                                text = "Tap here again to select new file",
-                                color = Color.White.copy(alpha = 0.6f),
-                                style = MaterialTheme.typography.bodySmall,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Welcome/Initial state
-            else -> {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(32.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = "ZIP Image Viewer",
-                        style = MaterialTheme.typography.headlineLarge,
-                        color = Color.White,
-                        textAlign = TextAlign.Center
-                    )
-                    
-                    Spacer(modifier = Modifier.height(24.dp))
-                    
-                    Text(
-                        text = "Select a ZIP file containing images to get started",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = Color.White.copy(alpha = 0.8f),
-                        textAlign = TextAlign.Center
-                    )
-                    
-                    Spacer(modifier = Modifier.height(32.dp))
-                    
-                    Button(
-                        onClick = { showFileSelector = true },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary
-                        )
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text(
-                            text = "Select ZIP File",
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                    }
-                    
-                    Spacer(modifier = Modifier.height(24.dp))
-                    
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = Color.White.copy(alpha = 0.1f)
-                        )
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp)
-                        ) {
-                            Text(
-                                text = "Instructions:",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = Color.White,
-                                modifier = Modifier.padding(bottom = 8.dp)
-                            )
-                            Text(
-                                text = "• Swipe left/right to browse images\n" +
-                                        "• Tap image to show/hide controls\n" +
-                                        "• Tap top area to show info & access file selection\n" +
-                                        "• Supported: JPG, PNG, GIF, BMP, WebP",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color.White.copy(alpha = 0.8f)
-                            )
-                        }
+                        CircularProgressIndicator()
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Scanning for ZIP files...")
                     }
                 }
             }
-        }
-
-        // File selector overlay
-        if (showFileSelector) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.8f))
-                    .clickable { showFileSelector = false },
-                contentAlignment = Alignment.Center
-            ) {
+            
+            localZipFiles.isEmpty() -> {
                 Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(32.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .clickable { /* Prevent closing when clicking on card */ },
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant
                     )
                 ) {
                     Column(
-                        modifier = Modifier.padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
+                        modifier = Modifier.fillMaxSize().padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
                     ) {
                         Text(
-                            text = "Select Source",
-                            style = MaterialTheme.typography.headlineSmall,
+                            text = "📁",
+                            style = MaterialTheme.typography.displayLarge,
+                            modifier = Modifier.padding(bottom = 16.dp)
+                        )
+                        
+                        Text(
+                            text = "No ZIP files found",
+                            style = MaterialTheme.typography.titleMedium,
                             textAlign = TextAlign.Center
                         )
                         
-                        Spacer(modifier = Modifier.height(16.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
                         
                         Text(
-                            text = "Choose how you want to select your ZIP file",
+                            text = "Download ZIP files from Dropbox or select from your device to get started",
                             style = MaterialTheme.typography.bodyMedium,
                             textAlign = TextAlign.Center,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                         )
-                        
-                        Spacer(modifier = Modifier.height(24.dp))
-                        
-                        // Local file button
-                        Button(
-                            onClick = {
-                                if (storagePermissionState.status.isGranted) {
-                                    zipPickerLauncher.launch("application/zip")
-                                } else {
-                                    storagePermissionState.launchPermissionRequest()
-                                }
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp)
-                        ) {
-                            Text("📁 Local Files")
-                        }
-                        
-                        Spacer(modifier = Modifier.height(12.dp))
-                        
-                        // Dropbox button
-                        OutlinedButton(
-                            onClick = {
-                                println("DEBUG: Dropbox Files button clicked")
-                                showFileSelector = false
-                                showDropboxScreen = true
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp)
-                        ) {
-                            Text("☁️ Dropbox Files")
-                        }
-                        
-                        Spacer(modifier = Modifier.height(16.dp))
-                        
-                        TextButton(
-                            onClick = { showFileSelector = false },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Cancel")
-                        }
+                    }
+                }
+            }
+            
+            else -> {
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(localZipFiles) { file ->
+                        ZipFileCard(
+                            file = file,
+                            onClick = { onFileSelected(file) }
+                        )
                     }
                 }
             }
         }
+    }
+}
 
-        // Dropbox screen overlay
-        if (showDropboxScreen) {
-            DropboxScreen(
-                dropboxAuthManager = dropboxAuthManager,
-                onFileSelected = { files ->
-                    println("DEBUG: Files selected: ${files.size}")
-                    imageFiles = files
-                    showDropboxScreen = false
-                },
-                onDismiss = { 
-                    println("DEBUG: Dropbox screen dismissed")
-                    showDropboxScreen = false 
-                }
+@Composable
+private fun ZipFileCard(
+    file: File,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() },
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "🗜️",
+                style = MaterialTheme.typography.headlineMedium,
+                modifier = Modifier.padding(end = 16.dp)
             )
+            
+            Column(
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(
+                    text = file.name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 2
+                )
+                
+                Text(
+                    text = "${formatFileSize(file.length())} • ${formatDate(file.lastModified())}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+                
+                Text(
+                    text = file.parent ?: "Unknown location",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                )
+            }
+            
+            Text(
+                text = "▶",
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ImageViewerScreen(
+    imageFiles: List<File>,
+    pagerState: androidx.compose.foundation.pager.PagerState,
+    showTopBar: Boolean,
+    onToggleTopBar: () -> Unit,
+    onBackToFiles: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+    ) {
+        // Full-screen image pager
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable { onToggleTopBar() },
+            key = { index -> imageFiles[index].absolutePath },
+            userScrollEnabled = true
+        ) { index ->
+            Image(
+                painter = rememberAsyncImagePainter(model = imageFiles[index]),
+                contentDescription = "Image ${index + 1}",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit
+            )
+        }
+
+        // Top clickable area for going back
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(120.dp)
+                .clickable { onBackToFiles() }
+                .align(Alignment.TopCenter)
+        )
+
+        // Top bar with image info
+        if (showTopBar) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = 0.8f))
+                    .padding(16.dp)
+                    .align(Alignment.TopCenter)
+            ) {
+                Column {
+                    Text(
+                        text = "Image ${pagerState.currentPage + 1} of ${imageFiles.size}",
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodyLarge,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    
+                    if (imageFiles.isNotEmpty() && pagerState.currentPage < imageFiles.size) {
+                        Text(
+                            text = imageFiles[pagerState.currentPage].name,
+                            color = Color.White.copy(alpha = 0.8f),
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    
+                    Spacer(modifier = Modifier.height(8.dp))
+                    
+                    Text(
+                        text = "Tap top area to go back to file list",
+                        color = Color.White.copy(alpha = 0.6f),
+                        style = MaterialTheme.typography.bodySmall,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
         }
     }
 }
@@ -412,7 +537,7 @@ private sealed class DropboxItem {
 @Composable
 private fun DropboxScreen(
     dropboxAuthManager: DropboxAuthManager,
-    onFileSelected: (List<File>) -> Unit,
+    onBackToLocal: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -424,6 +549,105 @@ private fun DropboxScreen(
     var currentPath by remember { mutableStateOf("") }
     var isLoadingFiles by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var downloadMessage by remember { mutableStateOf<String?>(null) }
+    
+    // Function to download ZIP file to Downloads folder
+    fun downloadZipFile(item: DropboxItem.ZipFile, client: com.dropbox.core.v2.DbxClientV2) {
+        coroutineScope.launch {
+            try {
+                isLoadingFiles = true
+                downloadMessage = "Downloading ${item.name}..."
+                
+                // Use Downloads/SatenDroid directory
+                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                val satenDroidDir = File(downloadsDir, "SatenDroid")
+                if (!satenDroidDir.exists()) {
+                    satenDroidDir.mkdirs()
+                }
+                
+                val localFile = File(satenDroidDir, item.name)
+                
+                withContext(Dispatchers.IO) {
+                    client.files().download(item.path).download(localFile.outputStream())
+                }
+                
+                downloadMessage = "✅ Downloaded: ${item.name}\nSaved to: Downloads/SatenDroid/"
+                println("DEBUG: Downloaded ${item.name} to ${localFile.absolutePath}")
+                
+            } catch (e: Exception) {
+                downloadMessage = "❌ Failed to download ${item.name}: ${e.message}"
+                println("DEBUG: Download error: ${e.message}")
+                e.printStackTrace()
+            } finally {
+                isLoadingFiles = false
+            }
+        }
+    }
+    
+    // Function to download all ZIP files in current folder
+    fun downloadFolderZips(client: com.dropbox.core.v2.DbxClientV2) {
+        val zipFiles = dropboxItems.filterIsInstance<DropboxItem.ZipFile>()
+        if (zipFiles.isEmpty()) {
+            downloadMessage = "No ZIP files found in this folder"
+            return
+        }
+        
+        coroutineScope.launch {
+            try {
+                isLoadingFiles = true
+                val folderName = if (currentPath.isEmpty()) "Root" else currentPath.substringAfterLast("/")
+                downloadMessage = "Downloading ${zipFiles.size} files from folder: $folderName..."
+                
+                // Use Downloads/SatenDroid directory
+                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                val satenDroidDir = File(downloadsDir, "SatenDroid")
+                if (!satenDroidDir.exists()) {
+                    satenDroidDir.mkdirs()
+                }
+                
+                // Create folder-specific directory
+                val folderDir = File(satenDroidDir, folderName)
+                if (!folderDir.exists()) {
+                    folderDir.mkdirs()
+                }
+                
+                var successCount = 0
+                var failCount = 0
+                
+                for ((index, zipFile) in zipFiles.withIndex()) {
+                    try {
+                        downloadMessage = "Downloading (${index + 1}/${zipFiles.size}): ${zipFile.name}..."
+                        
+                        val localFile = File(folderDir, zipFile.name)
+                        
+                        withContext(Dispatchers.IO) {
+                            client.files().download(zipFile.path).download(localFile.outputStream())
+                        }
+                        
+                        successCount++
+                        println("DEBUG: Downloaded ${zipFile.name} to ${localFile.absolutePath}")
+                        
+                    } catch (e: Exception) {
+                        failCount++
+                        println("DEBUG: Failed to download ${zipFile.name}: ${e.message}")
+                    }
+                }
+                
+                downloadMessage = "✅ Folder download complete!\n" +
+                        "Folder: $folderName\n" +
+                        "Success: $successCount files\n" +
+                        "Failed: $failCount files\n" +
+                        "Saved to: Downloads/SatenDroid/$folderName/"
+                
+            } catch (e: Exception) {
+                downloadMessage = "❌ Folder download failed: ${e.message}"
+                println("DEBUG: Folder download error: ${e.message}")
+                e.printStackTrace()
+            } finally {
+                isLoadingFiles = false
+            }
+        }
+    }
     
     // Function to load folder contents
     fun loadFolder(path: String, client: com.dropbox.core.v2.DbxClientV2) {
@@ -534,8 +758,15 @@ private fun DropboxScreen(
                         style = MaterialTheme.typography.headlineSmall
                     )
                     
-                    TextButton(onClick = onDismiss) {
-                        Text("✕ Close")
+                    Row {
+                        // Back to Local Files button
+                        TextButton(onClick = onBackToLocal) {
+                            Text("📁 Local Files")
+                        }
+                        
+                        TextButton(onClick = onDismiss) {
+                            Text("✕ Close")
+                        }
                     }
                 }
                 
@@ -607,7 +838,7 @@ private fun DropboxScreen(
                                 modifier = Modifier.padding(bottom = 8.dp)
                             )
                             
-                            // Current path indicator and back button
+                            // Current path indicator and navigation buttons
                             Row(
                                 modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
                                 verticalAlignment = Alignment.CenterVertically
@@ -632,8 +863,60 @@ private fun DropboxScreen(
                                 Text(
                                     text = if (currentPath.isEmpty()) "📁 Root Folder" else "📁 $currentPath",
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                    modifier = Modifier.weight(1f)
                                 )
+                                
+                                // Download All ZIPs in current folder button
+                                val zipCount = dropboxItems.filterIsInstance<DropboxItem.ZipFile>().size
+                                if (zipCount > 0) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            val authenticatedState = authState as DropboxAuthState.Authenticated
+                                            downloadFolderZips(authenticatedState.client)
+                                        },
+                                        enabled = !isLoadingFiles,
+                                        modifier = Modifier.padding(start = 8.dp)
+                                    ) {
+                                        Text("⬇️ All ($zipCount)")
+                                    }
+                                }
+                            }
+                            
+                            // Download message display
+                            if (downloadMessage != null) {
+                                Card(
+                                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = if (downloadMessage!!.startsWith("✅")) 
+                                            MaterialTheme.colorScheme.primaryContainer 
+                                        else 
+                                            MaterialTheme.colorScheme.errorContainer
+                                    )
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.Top
+                                    ) {
+                                        Text(
+                                            text = downloadMessage!!,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = if (downloadMessage!!.startsWith("✅")) 
+                                                MaterialTheme.colorScheme.onPrimaryContainer 
+                                            else 
+                                                MaterialTheme.colorScheme.onErrorContainer,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        
+                                        TextButton(
+                                            onClick = { downloadMessage = null },
+                                            modifier = Modifier.padding(start = 8.dp)
+                                        ) {
+                                            Text("✕")
+                                        }
+                                    }
+                                }
                             }
                             
                             when {
@@ -710,7 +993,7 @@ private fun DropboxScreen(
                                                                 loadFolder(item.path, authenticatedState.client)
                                                             }
                                                             is DropboxItem.ZipFile -> {
-                                                                // Handle ZIP file selection - could be implemented later
+                                                                // ZIP file click is handled by download button
                                                             }
                                                         }
                                                     },
@@ -737,7 +1020,7 @@ private fun DropboxScreen(
                                                         modifier = Modifier.padding(end = 12.dp)
                                                     )
                                                     
-                                                    // File/Folder info
+                                                    // File/Folder info and actions
                                                     Column(
                                                         modifier = Modifier.weight(1f)
                                                     ) {
@@ -765,40 +1048,21 @@ private fun DropboxScreen(
                                                         }
                                                     }
                                                     
-                                                    // Download button for ZIP files
-                                                    if (item is DropboxItem.ZipFile) {
-                                                        Button(
-                                                            onClick = {
-                                                                println("DEBUG: Download ZIP ${item.name}")
-                                                                coroutineScope.launch {
-                                                                    try {
-                                                                        val authenticatedState = authState as DropboxAuthState.Authenticated
-                                                                        val client = authenticatedState.client
-                                                                        val localFile = File(context.cacheDir, item.name)
-                                                                        
-                                                                        // Show loading state
-                                                                        isLoadingFiles = true
-                                                                        
-                                                                        withContext(Dispatchers.IO) {
-                                                                            client.files().download(item.path).download(localFile.outputStream())
-                                                                        }
-                                                                        
-                                                                        // Extract images from ZIP
-                                                                        val zipHandler = ZipImageHandler(context)
-                                                                        val extractedFiles = zipHandler.extractImagesFromZip(Uri.fromFile(localFile))
-                                                                        onFileSelected(extractedFiles)
-                                                                    } catch (e: Exception) {
-                                                                        errorMessage = "Failed to download: ${e.message}"
-                                                                        println("DEBUG: Download error: ${e.message}")
-                                                                        e.printStackTrace()
-                                                                    } finally {
-                                                                        isLoadingFiles = false
-                                                                    }
-                                                                }
-                                                            },
-                                                            enabled = !isLoadingFiles
-                                                        ) {
-                                                            Text("Download")
+                                                    // Action buttons
+                                                    when (item) {
+                                                        is DropboxItem.ZipFile -> {
+                                                            Button(
+                                                                onClick = {
+                                                                    val authenticatedState = authState as DropboxAuthState.Authenticated
+                                                                    downloadZipFile(item, authenticatedState.client)
+                                                                },
+                                                                enabled = !isLoadingFiles
+                                                            ) {
+                                                                Text("⬇️ Download")
+                                                            }
+                                                        }
+                                                        is DropboxItem.Folder -> {
+                                                            // Folder doesn't need action button here as navigation is handled by card click
                                                         }
                                                     }
                                                 }
@@ -820,13 +1084,19 @@ private fun DropboxScreen(
                                     Text("Disconnect")
                                 }
                                 
+                                OutlinedButton(
+                                    onClick = onBackToLocal
+                                ) {
+                                    Text("📁 Local Files")
+                                }
+                                
                                 Button(
                                     onClick = {
                                         val authenticatedState = authState as DropboxAuthState.Authenticated
                                         loadFolder(currentPath, authenticatedState.client)
                                     }
                                 ) {
-                                    Text("Refresh")
+                                    Text("🔄 Refresh")
                                 }
                             }
                         }
@@ -837,7 +1107,7 @@ private fun DropboxScreen(
     }
 }
 
-// Helper function to format file size
+// Helper functions
 private fun formatFileSize(bytes: Long): String {
     val kb = bytes / 1024.0
     val mb = kb / 1024.0
@@ -849,4 +1119,9 @@ private fun formatFileSize(bytes: Long): String {
         kb >= 1 -> "%.1f KB".format(kb)
         else -> "$bytes bytes"
     }
+}
+
+private fun formatDate(timestamp: Long): String {
+    val dateFormat = java.text.SimpleDateFormat("MMM dd, yyyy", java.util.Locale.getDefault())
+    return dateFormat.format(java.util.Date(timestamp))
 }

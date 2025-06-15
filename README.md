@@ -1,4 +1,4 @@
-# SatEnDroid - ZIP Image Viewer
+# SatenDroid - ZIP Image Viewer
 
 Android app for viewing images from ZIP files with Dropbox integration support.
 
@@ -34,7 +34,7 @@ For full Dropbox functionality:
 1. **Create Dropbox App**:
    - Visit [Dropbox App Console](https://www.dropbox.com/developers/apps)
    - Choose "Scoped access" and "Full Dropbox"
-   - Name your app (e.g., "SatEnDroid")
+   - Name your app (e.g., "SatenDroid")
 
 2. **Configure OAuth**:
    - Add redirect URI: `com.celstech.satendroid://oauth`

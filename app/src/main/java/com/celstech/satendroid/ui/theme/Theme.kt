@@ -28,7 +28,7 @@ private val DarkColorScheme = darkColorScheme(
 )
 
 @Composable
-fun SatEndroidTheme(
+fun SatenDroidTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicColor: Boolean = true,
     content: @Composable () -> Unit
