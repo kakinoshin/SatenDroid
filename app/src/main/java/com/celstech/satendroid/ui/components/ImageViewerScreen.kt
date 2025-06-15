@@ -565,6 +565,26 @@ private sealed class DropboxItem {
     ) : DropboxItem()
 }
 
+// Data class for download progress tracking
+private data class DownloadProgress(
+    val fileName: String = "",
+    val currentFileProgress: Float = 0f, // 0.0 to 1.0
+    val currentFileIndex: Int = 0,
+    val totalFiles: Int = 1,
+    val downloadSpeed: String = "",
+    val bytesDownloaded: Long = 0L,
+    val totalBytes: Long = 0L,
+    val estimatedTimeRemaining: String = ""
+) {
+    val overallProgress: Float get() = 
+        if (totalFiles <= 1) currentFileProgress
+        else (currentFileIndex.toFloat() + currentFileProgress) / totalFiles.toFloat()
+        
+    val progressText: String get() = 
+        if (totalFiles <= 1) "${(currentFileProgress * 100).toInt()}%"
+        else "File ${currentFileIndex + 1}/$totalFiles (${(overallProgress * 100).toInt()}%)"
+}
+
 @Composable
 private fun DropboxScreen(
     dropboxAuthManager: DropboxAuthManager,
@@ -582,12 +602,22 @@ private fun DropboxScreen(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var downloadMessage by remember { mutableStateOf<String?>(null) }
     
+    // Progress tracking state
+    var isDownloading by remember { mutableStateOf(false) }
+    var downloadProgress by remember { mutableStateOf(DownloadProgress()) }
+    
     // Function to download ZIP file to Downloads folder
     fun downloadZipFile(item: DropboxItem.ZipFile, client: com.dropbox.core.v2.DbxClientV2) {
         coroutineScope.launch {
             try {
+                isDownloading = true
                 isLoadingFiles = true
-                downloadMessage = "Downloading ${item.name}..."
+                downloadMessage = null
+                downloadProgress = DownloadProgress(
+                    fileName = item.name,
+                    totalBytes = item.size,
+                    totalFiles = 1
+                )
                 
                 // Use app-specific external files directory (reliable access)
                 val appDownloadsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
@@ -615,8 +645,43 @@ private fun DropboxScreen(
                     throw Exception("Cannot write to directory: ${satenDroidDir.absolutePath}")
                 }
                 
+                var startTime = System.currentTimeMillis()
+                
                 withContext(Dispatchers.IO) {
-                    client.files().download(item.path).download(localFile.outputStream())
+                    val downloader = client.files().download(item.path)
+                    
+                    // Custom output stream that tracks progress
+                    val outputStream = localFile.outputStream()
+                    val buffer = ByteArray(8192)
+                    var bytesDownloaded = 0L
+                    
+                    val inputStream = downloader.inputStream
+                    
+                    try {
+                        var bytesRead: Int
+                        while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                            outputStream.write(buffer, 0, bytesRead)
+                            bytesDownloaded += bytesRead
+                            
+                            // Update progress on main thread
+                            withContext(Dispatchers.Main) {
+                                val currentTime = System.currentTimeMillis()
+                                val elapsedTime = (currentTime - startTime) / 1000.0 // seconds
+                                val speed = if (elapsedTime > 0) bytesDownloaded / elapsedTime else 0.0
+                                val remaining = if (speed > 0) (item.size - bytesDownloaded) / speed else 0.0
+                                
+                                downloadProgress = downloadProgress.copy(
+                                    currentFileProgress = bytesDownloaded.toFloat() / item.size.toFloat(),
+                                    bytesDownloaded = bytesDownloaded,
+                                    downloadSpeed = formatSpeed(speed),
+                                    estimatedTimeRemaining = formatTime(remaining)
+                                )
+                            }
+                        }
+                    } finally {
+                        inputStream.close()
+                        outputStream.close()
+                    }
                 }
                 
                 downloadMessage = "✅ Downloaded: ${item.name}\nSaved to: ${localFile.absolutePath}"
@@ -627,6 +692,7 @@ private fun DropboxScreen(
                 println("DEBUG: Download error: ${e.message}")
                 e.printStackTrace()
             } finally {
+                isDownloading = false
                 isLoadingFiles = false
             }
         }
@@ -642,9 +708,17 @@ private fun DropboxScreen(
         
         coroutineScope.launch {
             try {
+                isDownloading = true
                 isLoadingFiles = true
+                downloadMessage = null
                 val folderName = if (currentPath.isEmpty()) "Root" else currentPath.substringAfterLast("/")
-                downloadMessage = "Downloading ${zipFiles.size} files from folder: $folderName..."
+                
+                val totalBytes = zipFiles.sumOf { it.size }
+                downloadProgress = DownloadProgress(
+                    fileName = "Preparing download...",
+                    totalFiles = zipFiles.size,
+                    totalBytes = totalBytes
+                )
                 
                 // Use app-specific external files directory (reliable access)
                 val appDownloadsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
@@ -682,16 +756,56 @@ private fun DropboxScreen(
                 
                 var successCount = 0
                 var failCount = 0
+                var totalBytesDownloaded = 0L
+                val startTime = System.currentTimeMillis()
                 
                 for ((index, zipFile) in zipFiles.withIndex()) {
                     try {
-                        downloadMessage = "Downloading (${index + 1}/${zipFiles.size}): ${zipFile.name}..."
+                        downloadProgress = downloadProgress.copy(
+                            fileName = zipFile.name,
+                            currentFileIndex = index,
+                            currentFileProgress = 0f
+                        )
                         
                         val localFile = File(folderDir, zipFile.name)
                         println("DEBUG: Downloading ${zipFile.name} to: ${localFile.absolutePath}")
                         
                         withContext(Dispatchers.IO) {
-                            client.files().download(zipFile.path).download(localFile.outputStream())
+                            val downloader = client.files().download(zipFile.path)
+                            
+                            // Custom output stream that tracks progress
+                            val outputStream = localFile.outputStream()
+                            val buffer = ByteArray(8192)
+                            var fileBytesDownloaded = 0L
+                            
+                            val inputStream = downloader.inputStream
+                            
+                            try {
+                                var bytesRead: Int
+                                while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                                    outputStream.write(buffer, 0, bytesRead)
+                                    fileBytesDownloaded += bytesRead
+                                    totalBytesDownloaded += bytesRead
+                                    
+                                    // Update progress on main thread
+                                    withContext(Dispatchers.Main) {
+                                        val currentTime = System.currentTimeMillis()
+                                        val elapsedTime = (currentTime - startTime) / 1000.0 // seconds
+                                        val speed = if (elapsedTime > 0) totalBytesDownloaded / elapsedTime else 0.0
+                                        val remaining = if (speed > 0) (totalBytes - totalBytesDownloaded) / speed else 0.0
+                                        
+                                        downloadProgress = downloadProgress.copy(
+                                            currentFileProgress = fileBytesDownloaded.toFloat() / zipFile.size.toFloat(),
+                                            bytesDownloaded = totalBytesDownloaded,
+                                            downloadSpeed = formatSpeed(speed),
+                                            estimatedTimeRemaining = formatTime(remaining)
+                                        )
+                                    }
+                                }
+                            } finally {
+                                inputStream.close()
+                                outputStream.close()
+                            }
                         }
                         
                         // Verify file was created
@@ -714,6 +828,7 @@ private fun DropboxScreen(
                         "Folder: $folderName\n" +
                         "Success: $successCount files\n" +
                         "Failed: $failCount files\n" +
+                        "Total size: ${formatFileSize(totalBytesDownloaded)}\n" +
                         "Saved to: ${folderDir.absolutePath}"
                 
             } catch (e: Exception) {
@@ -721,6 +836,7 @@ private fun DropboxScreen(
                 println("DEBUG: Folder download error: ${e.message}")
                 e.printStackTrace()
             } finally {
+                isDownloading = false
                 isLoadingFiles = false
             }
         }
@@ -952,7 +1068,7 @@ private fun DropboxScreen(
                                             val authenticatedState = authState as DropboxAuthState.Authenticated
                                             downloadFolderZips(authenticatedState.client)
                                         },
-                                        enabled = !isLoadingFiles,
+                                        enabled = !isLoadingFiles && !isDownloading,
                                         modifier = Modifier.padding(start = 8.dp)
                                     ) {
                                         Text("⬇️ All ($zipCount)")
@@ -960,7 +1076,93 @@ private fun DropboxScreen(
                                 }
                             }
                             
-                            // Download message display
+                            // Download progress display
+                            if (isDownloading) {
+                                Card(
+                                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                                    )
+                                ) {
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth().padding(16.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = "Downloading",
+                                                style = MaterialTheme.typography.titleMedium,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                                            )
+                                            
+                                            Text(
+                                                text = downloadProgress.progressText,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                                            )
+                                        }
+                                        
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        
+                                        // File name
+                                        Text(
+                                            text = downloadProgress.fileName,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            maxLines = 1
+                                        )
+                                        
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        
+                                        // Progress bar
+                                        LinearProgressIndicator(
+                                            progress = downloadProgress.overallProgress,
+                                            modifier = Modifier.fillMaxWidth(),
+                                            color = MaterialTheme.colorScheme.primary,
+                                            trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+                                        )
+                                        
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        
+                                        // Speed and time info
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(
+                                                text = if (downloadProgress.downloadSpeed.isNotEmpty()) 
+                                                    "Speed: ${downloadProgress.downloadSpeed}" 
+                                                else "Calculating speed...",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                                            )
+                                            
+                                            Text(
+                                                text = if (downloadProgress.estimatedTimeRemaining.isNotEmpty()) 
+                                                    "ETA: ${downloadProgress.estimatedTimeRemaining}" 
+                                                else "Calculating...",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                                            )
+                                        }
+                                        
+                                        // Size info
+                                        if (downloadProgress.totalBytes > 0) {
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                text = "${formatFileSize(downloadProgress.bytesDownloaded)} / ${formatFileSize(downloadProgress.totalBytes)}",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // Download message display (completion/error messages)
                             if (downloadMessage != null) {
                                 Card(
                                     modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
@@ -1133,7 +1335,7 @@ private fun DropboxScreen(
                                                                     val authenticatedState = authState as DropboxAuthState.Authenticated
                                                                     downloadZipFile(item, authenticatedState.client)
                                                                 },
-                                                                enabled = !isLoadingFiles
+                                                                enabled = !isLoadingFiles && !isDownloading
                                                             ) {
                                                                 Text("⬇️ Download")
                                                             }
@@ -1201,4 +1403,32 @@ private fun formatFileSize(bytes: Long): String {
 private fun formatDate(timestamp: Long): String {
     val dateFormat = java.text.SimpleDateFormat("MMM dd, yyyy", java.util.Locale.getDefault())
     return dateFormat.format(java.util.Date(timestamp))
+}
+
+private fun formatSpeed(bytesPerSecond: Double): String {
+    val kb = bytesPerSecond / 1024.0
+    val mb = kb / 1024.0
+    
+    return when {
+        mb >= 1 -> "%.1f MB/s".format(mb)
+        kb >= 1 -> "%.1f KB/s".format(kb)
+        else -> "%.0f B/s".format(bytesPerSecond)
+    }
+}
+
+private fun formatTime(seconds: Double): String {
+    if (seconds.isInfinite() || seconds.isNaN() || seconds < 0) {
+        return "∞"
+    }
+    
+    val totalSeconds = seconds.toInt()
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
+    val secs = totalSeconds % 60
+    
+    return when {
+        hours > 0 -> "${hours}h ${minutes}m"
+        minutes > 0 -> "${minutes}m ${secs}s"
+        else -> "${secs}s"
+    }
 }
