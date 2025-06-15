@@ -8,16 +8,20 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
@@ -189,6 +193,12 @@ private fun LocalFileListScreen(
     var currentPath by remember { mutableStateOf("") }
     var pathHistory by remember { mutableStateOf<List<String>>(emptyList()) }
     
+    // Selection mode states
+    var isSelectionMode by remember { mutableStateOf(false) }
+    var selectedItems by remember { mutableStateOf<Set<LocalItem>>(emptySet()) }
+    var showDeleteConfirmDialog by remember { mutableStateOf(false) }
+    var itemToDelete by remember { mutableStateOf<LocalItem?>(null) }
+    
     // Function to scan for ZIP files and folders in current directory
     fun scanDirectory(path: String = "") {
         isRefreshing = true
@@ -287,6 +297,10 @@ private fun LocalFileListScreen(
     
     // Function to navigate into a folder
     fun navigateToFolder(folderPath: String) {
+        // Exit selection mode when navigating
+        isSelectionMode = false
+        selectedItems = emptySet()
+        
         pathHistory = pathHistory + currentPath
         currentPath = folderPath
         scanDirectory(folderPath)
@@ -294,12 +308,83 @@ private fun LocalFileListScreen(
     
     // Function to navigate back
     fun navigateBack() {
+        // Exit selection mode when navigating
+        isSelectionMode = false
+        selectedItems = emptySet()
+        
         if (pathHistory.isNotEmpty()) {
             val previousPath = pathHistory.last()
             pathHistory = pathHistory.dropLast(1)
             currentPath = previousPath
             scanDirectory(previousPath)
         }
+    }
+    
+    // Delete functions
+    fun deleteFile(item: LocalItem.ZipFile): Boolean {
+        return try {
+            item.file.delete()
+        } catch (e: Exception) {
+            println("DEBUG: Failed to delete file: ${e.message}")
+            false
+        }
+    }
+    
+    fun deleteFolder(item: LocalItem.Folder): Boolean {
+        return try {
+            // Get base directories where folders can exist
+            val baseDirectories = mutableListOf<File>()
+            
+            val appDownloadsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            if (appDownloadsDir != null && appDownloadsDir.exists()) {
+                baseDirectories.add(appDownloadsDir)
+            }
+            
+            try {
+                val publicDownloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                if (publicDownloadsDir != null && publicDownloadsDir.exists()) {
+                    baseDirectories.add(publicDownloadsDir)
+                }
+            } catch (e: Exception) {
+                println("DEBUG: Cannot access public downloads directory: ${e.message}")
+            }
+            
+            // Try to delete folder from each base directory
+            var deleted = false
+            for (baseDir in baseDirectories) {
+                val folderFile = File(baseDir, item.path)
+                if (folderFile.exists() && folderFile.isDirectory) {
+                    deleted = folderFile.deleteRecursively() || deleted
+                }
+            }
+            
+            deleted
+        } catch (e: Exception) {
+            println("DEBUG: Failed to delete folder: ${e.message}")
+            false
+        }
+    }
+    
+    fun deleteSelectedItems() {
+        var successCount = 0
+        var failCount = 0
+        
+        selectedItems.forEach { item ->
+            val success = when (item) {
+                is LocalItem.ZipFile -> deleteFile(item)
+                is LocalItem.Folder -> deleteFolder(item)
+            }
+            
+            if (success) successCount++ else failCount++
+        }
+        
+        // Clear selection and refresh
+        selectedItems = emptySet()
+        isSelectionMode = false
+        scanDirectory(currentPath)
+        
+        // Show result (you could add a toast or snackbar here)
+        println("DEBUG: Deleted $successCount items, failed to delete $failCount items")
     }
     
     // Scan for files on first load
@@ -357,27 +442,73 @@ private fun LocalFileListScreen(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            if (currentPath.isNotEmpty()) {
-                Button(
-                    onClick = { navigateBack() },
-                    modifier = Modifier.padding(end = 8.dp)
+            if (isSelectionMode) {
+                // Selection mode toolbar
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("← Back")
+                    IconButton(onClick = { 
+                        isSelectionMode = false
+                        selectedItems = emptySet()
+                    }) {
+                        Text("✕", style = MaterialTheme.typography.titleLarge)
+                    }
+                    
+                    Text(
+                        text = "${selectedItems.size} selected",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    )
+                    
+                    Spacer(modifier = Modifier.weight(1f))
+                    
+                    if (selectedItems.size == localItems.size && localItems.isNotEmpty()) {
+                        TextButton(onClick = { selectedItems = emptySet() }) {
+                            Text("Deselect All")
+                        }
+                    } else if (localItems.isNotEmpty()) {
+                        TextButton(onClick = { selectedItems = localItems.toSet() }) {
+                            Text("Select All")
+                        }
+                    }
+                    
+                    if (selectedItems.isNotEmpty()) {
+                        Button(
+                            onClick = { showDeleteConfirmDialog = true },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error
+                            ),
+                            modifier = Modifier.padding(start = 8.dp)
+                        ) {
+                            Text("🗑️ Delete (${selectedItems.size})")
+                        }
+                    }
                 }
-            }
-            
-            Text(
-                text = if (currentPath.isEmpty()) "📁 Local Files" else "📁 $currentPath",
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onBackground,
-                modifier = Modifier.weight(1f)
-            )
-            
-            TextButton(
-                onClick = { scanDirectory(currentPath) },
-                enabled = !isRefreshing
-            ) {
-                Text("🔄 Refresh")
+            } else {
+                // Normal navigation bar
+                if (currentPath.isNotEmpty()) {
+                    Button(
+                        onClick = { navigateBack() },
+                        modifier = Modifier.padding(end = 8.dp)
+                    ) {
+                        Text("← Back")
+                    }
+                }
+                
+                Text(
+                    text = if (currentPath.isEmpty()) "📁 Local Files" else "📁 $currentPath",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.weight(1f)
+                )
+                
+                TextButton(
+                    onClick = { scanDirectory(currentPath) },
+                    enabled = !isRefreshing
+                ) {
+                    Text("🔄 Refresh")
+                }
             }
         }
         
@@ -461,16 +592,102 @@ private fun LocalFileListScreen(
                     items(localItems) { item ->
                         LocalItemCard(
                             item = item,
+                            isSelected = selectedItems.contains(item),
+                            isSelectionMode = isSelectionMode,
                             onClick = { 
-                                when (item) {
-                                    is LocalItem.Folder -> navigateToFolder(item.path)
-                                    is LocalItem.ZipFile -> onFileSelected(item.file)
+                                if (isSelectionMode) {
+                                    // Toggle selection
+                                    selectedItems = if (selectedItems.contains(item)) {
+                                        selectedItems - item
+                                    } else {
+                                        selectedItems + item
+                                    }
+                                } else {
+                                    when (item) {
+                                        is LocalItem.Folder -> navigateToFolder(item.path)
+                                        is LocalItem.ZipFile -> onFileSelected(item.file)
+                                    }
                                 }
+                            },
+                            onLongClick = {
+                                if (!isSelectionMode) {
+                                    isSelectionMode = true
+                                    selectedItems = setOf(item)
+                                }
+                            },
+                            onDeleteClick = {
+                                itemToDelete = item
+                                showDeleteConfirmDialog = true
                             }
                         )
                     }
                 }
             }
+        }
+        
+        // Delete confirmation dialog
+        if (showDeleteConfirmDialog) {
+            AlertDialog(
+                onDismissRequest = { 
+                    showDeleteConfirmDialog = false
+                    itemToDelete = null
+                },
+                title = { 
+                    Text(
+                        text = if (itemToDelete != null) "Delete Item?" else "Delete ${selectedItems.size} Items?"
+                    ) 
+                },
+                text = { 
+                    Text(
+                        text = if (itemToDelete != null) {
+                            when (itemToDelete) {
+                                is LocalItem.Folder -> "Are you sure you want to delete the folder '${itemToDelete!!.name}' and all its contents?"
+                                is LocalItem.ZipFile -> "Are you sure you want to delete '${itemToDelete!!.name}'?"
+                                else -> ""
+                            }
+                        } else {
+                            "Are you sure you want to delete ${selectedItems.size} selected items? This action cannot be undone."
+                        }
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (itemToDelete != null) {
+                                // Single item delete
+                                val success = when (val item = itemToDelete!!) {
+                                    is LocalItem.ZipFile -> deleteFile(item)
+                                    is LocalItem.Folder -> deleteFolder(item)
+                                }
+                                if (!success) {
+                                    println("DEBUG: Failed to delete ${itemToDelete!!.name}")
+                                }
+                                itemToDelete = null
+                                scanDirectory(currentPath)
+                            } else {
+                                // Multiple items delete
+                                deleteSelectedItems()
+                            }
+                            showDeleteConfirmDialog = false
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Text("Delete")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = { 
+                            showDeleteConfirmDialog = false
+                            itemToDelete = null
+                        }
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            )
         }
     }
 }
@@ -478,16 +695,26 @@ private fun LocalFileListScreen(
 @Composable
 private fun LocalItemCard(
     item: LocalItem,
-    onClick: () -> Unit
+    isSelected: Boolean = false,
+    isSelectionMode: Boolean = false,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit = {},
+    onDeleteClick: () -> Unit = {}
 ) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onClick() },
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = { onClick() },
+                    onLongPress = { onLongClick() }
+                )
+            },
         colors = CardDefaults.cardColors(
-            containerColor = when (item) {
-                is LocalItem.Folder -> MaterialTheme.colorScheme.primaryContainer
-                is LocalItem.ZipFile -> MaterialTheme.colorScheme.surface
+            containerColor = when {
+                isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                item is LocalItem.Folder -> MaterialTheme.colorScheme.primaryContainer
+                else -> MaterialTheme.colorScheme.surface
             }
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
@@ -498,14 +725,23 @@ private fun LocalItemCard(
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = when (item) {
-                    is LocalItem.Folder -> "📁"
-                    is LocalItem.ZipFile -> "🗜️"
-                },
-                style = MaterialTheme.typography.headlineMedium,
-                modifier = Modifier.padding(end = 16.dp)
-            )
+            // Selection checkbox or icon
+            if (isSelectionMode) {
+                Checkbox(
+                    checked = isSelected,
+                    onCheckedChange = { onClick() },
+                    modifier = Modifier.padding(end = 16.dp)
+                )
+            } else {
+                Text(
+                    text = when (item) {
+                        is LocalItem.Folder -> "📁"
+                        is LocalItem.ZipFile -> "🗜️"
+                    },
+                    style = MaterialTheme.typography.headlineMedium,
+                    modifier = Modifier.padding(end = 16.dp)
+                )
+            }
             
             Column(
                 modifier = Modifier.weight(1f)
@@ -546,14 +782,32 @@ private fun LocalItemCard(
                 }
             }
             
-            Text(
-                text = when (item) {
-                    is LocalItem.Folder -> "📂"
-                    is LocalItem.ZipFile -> "▶"
-                },
-                style = MaterialTheme.typography.headlineSmall,
-                color = MaterialTheme.colorScheme.primary
-            )
+            // Action buttons
+            if (!isSelectionMode) {
+                Row {
+                    // Delete button
+                    IconButton(
+                        onClick = onDeleteClick
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "Delete",
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    
+                    // Open indicator
+                    Text(
+                        text = when (item) {
+                            is LocalItem.Folder -> "📂"
+                            is LocalItem.ZipFile -> "▶"
+                        },
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 8.dp)
+                    )
+                }
+            }
         }
     }
 }
