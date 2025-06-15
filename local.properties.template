@@ -1,0 +1,17 @@
+## This file is a template for local.properties
+# Copy this file to local.properties and fill in your actual values
+# local.properties should NOT be committed to version control
+
+# Location of the Android SDK (automatically filled by Android Studio)
+sdk.dir=
+
+# Dropbox API Configuration
+# Get your App Key from https://www.dropbox.com/developers/apps
+# Example: DROPBOX_APP_KEY=abc123def456ghi789
+DROPBOX_APP_KEY=
+
+# Instructions:
+# 1. Create a Dropbox app at https://www.dropbox.com/developers/apps
+# 2. Choose "Scoped access" and "Full Dropbox"
+# 3. Copy your App Key and paste it above
+# 4. Set redirect URI to: com.celstech.satendroid://oauth
