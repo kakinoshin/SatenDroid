@@ -135,7 +135,6 @@ class DropboxAuthManager(private val context: Context) {
         prefs.edit().putBoolean(KEY_IS_AUTHENTICATING, true).apply()
         
         // Clear any old session but NOT the code verifier if it exists
-        val oldCodeVerifier = prefs.getString(KEY_CODE_VERIFIER, null)
         clearSession()
         
         // Generate PKCE challenge

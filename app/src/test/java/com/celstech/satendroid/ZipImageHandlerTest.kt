@@ -1,7 +1,6 @@
 package com.celstech.satendroid
 
 import android.content.Context
-import android.net.Uri
 import com.celstech.satendroid.utils.ZipImageHandler
 import org.junit.Before
 import org.junit.Test
@@ -9,10 +8,8 @@ import org.junit.runner.RunWith
 import org.mockito.Mock
 import org.mockito.Mockito.`when`
 import org.mockito.junit.MockitoJUnitRunner
-import org.mockito.kotlin.any
 import org.mockito.kotlin.mock
 import java.io.File
-import java.io.InputStream
 import kotlin.test.assertEquals
 
 @RunWith(MockitoJUnitRunner::class)
@@ -20,9 +17,6 @@ class ZipImageHandlerTest {
 
     @Mock
     lateinit var mockContext: Context
-    
-    @Mock
-    lateinit var mockUri: Uri
     
     private lateinit var zipImageHandler: ZipImageHandler
 
@@ -60,8 +54,8 @@ class ZipImageHandlerTest {
         // 3. Call extractImagesFromZip
         // 4. Assert the result is an empty list
         
-        // Example assertion
-        val emptyList = listOf<File>()
-        assertEquals(emptyList.size, 0)
+        // Example assertion - verify empty list behavior
+        val emptyList = emptyList<File>()
+        assertEquals(0, emptyList.size)
     }
 }
