@@ -249,6 +249,12 @@ private fun LocalFileListScreen(
             // App-specific external files directory (main location)
             val appDownloadsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
             if (appDownloadsDir != null && appDownloadsDir.exists()) {
+                // Check for SatenDroid subdirectory first
+                val satenDroidDir = File(appDownloadsDir, "SatenDroid")
+                if (satenDroidDir.exists() && satenDroidDir.isDirectory) {
+                    baseDirectories.add(satenDroidDir)
+                }
+                // Also add the base downloads directory
                 baseDirectories.add(appDownloadsDir)
             }
             
@@ -262,30 +268,61 @@ private fun LocalFileListScreen(
                 println("DEBUG: Cannot access public downloads directory: ${e.message}")
             }
             
+            println("DEBUG: Scanning with path: '$path'")
+            println("DEBUG: Base directories: ${baseDirectories.map { it.absolutePath }}")
+            
             // Scan the specified path within each base directory
             for (baseDir in baseDirectories) {
                 val targetDir = if (path.isEmpty()) baseDir else File(baseDir, path)
                 
-                if (!targetDir.exists() || !targetDir.isDirectory) continue
+                if (!targetDir.exists() || !targetDir.isDirectory) {
+                    println("DEBUG: Directory does not exist or is not a directory: ${targetDir.absolutePath}")
+                    continue
+                }
                 
                 println("DEBUG: Scanning directory: ${targetDir.absolutePath}")
                 
-                // Get direct children of the target directory
+                // Get direct children of the target directory  
                 val children = targetDir.listFiles() ?: continue
+                
+                println("DEBUG: Found ${children.size} children in ${targetDir.absolutePath}")
                 
                 for (child in children) {
                     when {
                         child.isDirectory -> {
-                            // Count ZIP files in this directory
-                            val zipCount = child.walkTopDown()
-                                .filter { it.isFile && it.extension.lowercase() == "zip" }
-                                .count()
+                            // Check if directory contains any ZIP files or subdirectories
+                            val subFiles = child.listFiles() ?: emptyArray()
+                            var hasZipFiles = false
+                            var hasSubfolders = false
+                            var zipCount = 0
                             
-                            if (zipCount > 0) {
+                            println("DEBUG: Checking directory: ${child.name} at ${child.absolutePath}")
+                            
+                            // Only check direct children, not recursive
+                            for (subFile in subFiles) {
+                                when {
+                                    subFile.isFile && subFile.extension.lowercase() == "zip" -> {
+                                        hasZipFiles = true
+                                        zipCount++
+                                    }
+                                    subFile.isDirectory -> {
+                                        // Check if subdirectory has any content
+                                        val subDirFiles = subFile.listFiles()
+                                        if (!subDirFiles.isNullOrEmpty()) {
+                                            hasSubfolders = true
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // Include folder if it has ZIP files or non-empty subdirectories
+                            if (hasZipFiles || hasSubfolders) {
                                 val relativePath = if (path.isEmpty()) 
                                     child.name 
                                 else 
                                     "$path/${child.name}"
+                                
+                                println("DEBUG: Adding folder with relative path: '$relativePath'")
                                 
                                 allItems.add(
                                     LocalItem.Folder(
@@ -323,6 +360,9 @@ private fun LocalFileListScreen(
                 .sortedWith(compareBy<LocalItem> { it !is LocalItem.Folder }.thenBy { it.name })
             
             println("DEBUG: Found ${localItems.size} items in path '$path'")
+            localItems.forEach { item ->
+                println("DEBUG: - ${item.name} (${item.path})")
+            }
             
         } catch (e: Exception) {
             println("DEBUG: Error scanning directory '$path': ${e.message}")
@@ -334,12 +374,19 @@ private fun LocalFileListScreen(
     
     // Function to navigate into a folder
     fun navigateToFolder(folderPath: String) {
+        println("DEBUG: navigateToFolder called with path: '$folderPath'")
+        println("DEBUG: Current path before navigation: '$currentPath'")
+        
         // Exit selection mode when navigating
         isSelectionMode = false
         selectedItems = emptySet()
         
         pathHistory = pathHistory + currentPath
         currentPath = folderPath
+        
+        println("DEBUG: Path history: $pathHistory")
+        println("DEBUG: New current path: '$currentPath'")
+        
         scanDirectory(folderPath)
     }
     
@@ -415,6 +462,12 @@ private fun LocalFileListScreen(
             
             val appDownloadsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
             if (appDownloadsDir != null && appDownloadsDir.exists()) {
+                // Check for SatenDroid subdirectory first
+                val satenDroidDir = File(appDownloadsDir, "SatenDroid")
+                if (satenDroidDir.exists() && satenDroidDir.isDirectory) {
+                    baseDirectories.add(satenDroidDir)
+                }
+                // Also add the base downloads directory
                 baseDirectories.add(appDownloadsDir)
             }
             
@@ -432,6 +485,7 @@ private fun LocalFileListScreen(
             for (baseDir in baseDirectories) {
                 val folderFile = File(baseDir, item.path)
                 if (folderFile.exists() && folderFile.isDirectory) {
+                    println("DEBUG: Deleting folder: ${folderFile.absolutePath}")
                     deleted = folderFile.deleteRecursively() || deleted
                 }
             }
@@ -682,8 +736,14 @@ private fun LocalFileListScreen(
                                     }
                                 } else {
                                     when (item) {
-                                        is LocalItem.Folder -> navigateToFolder(item.path)
-                                        is LocalItem.ZipFile -> onFileSelected(item.file)
+                                        is LocalItem.Folder -> {
+                                            println("DEBUG: Folder clicked: ${item.name} with path: ${item.path}")
+                                            navigateToFolder(item.path)
+                                        }
+                                        is LocalItem.ZipFile -> {
+                                            println("DEBUG: ZIP file clicked: ${item.name}")
+                                            onFileSelected(item.file)
+                                        }
                                     }
                                 }
                             },
@@ -853,8 +913,14 @@ private fun LocalItemCard(
                 
                 when (item) {
                     is LocalItem.Folder -> {
+                        val description = if (item.zipCount > 0) {
+                            "${item.zipCount} ZIP file${if (item.zipCount != 1) "s" else ""}"
+                        } else {
+                            "Contains subfolders"
+                        }
+                        
                         Text(
-                            text = "${item.zipCount} ZIP file${if (item.zipCount != 1) "s" else ""} • ${formatDate(item.lastModified)}",
+                            text = "$description • ${formatDate(item.lastModified)}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                         )
