@@ -1,17 +1,29 @@
 package com.celstech.satendroid.viewmodel
 
 import android.content.Context
-import android.os.Environment
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.celstech.satendroid.navigation.LocalFileNavigationManager
+import com.celstech.satendroid.repository.LocalFileRepository
+import com.celstech.satendroid.selection.SelectionManager
+import com.celstech.satendroid.ui.models.LocalFileUiState
+import com.celstech.satendroid.ui.models.LocalItem
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import java.io.File
 
-class LocalFileViewModel(private val context: Context) : ViewModel() {
+/**
+ * ローカルファイル管理のViewModel
+ * Repository、Navigation、Selectionの各Managerを使用してスリム化
+ */
+class LocalFileViewModel(
+    private val repository: LocalFileRepository,
+    private val navigationManager: LocalFileNavigationManager,
+    private val selectionManager: SelectionManager
+) : ViewModel() {
+
     // UI state
     private val _uiState = MutableStateFlow(LocalFileUiState())
     val uiState: StateFlow<LocalFileUiState> = _uiState.asStateFlow()
@@ -19,62 +31,82 @@ class LocalFileViewModel(private val context: Context) : ViewModel() {
     // Navigation
     fun navigateToFolder(folderPath: String) {
         val currentState = _uiState.value
+        val navigationResult = navigationManager.navigateToFolder(
+            currentState.currentPath,
+            currentState.pathHistory,
+            folderPath
+        )
+        
         _uiState.value = currentState.copy(
-            pathHistory = currentState.pathHistory + currentState.currentPath,
-            currentPath = folderPath,
+            pathHistory = navigationResult.newHistory,
+            currentPath = navigationResult.newPath,
             isSelectionMode = false,
             selectedItems = emptySet()
         )
-        scanDirectory(folderPath)
+        scanDirectory(navigationResult.newPath)
     }
 
     fun navigateBack() {
         val currentState = _uiState.value
-        if (currentState.pathHistory.isNotEmpty()) {
-            val previousPath = currentState.pathHistory.last()
+        val navigationResult = navigationManager.navigateBack(currentState.pathHistory)
+        
+        if (navigationResult != null) {
             _uiState.value = currentState.copy(
-                pathHistory = currentState.pathHistory.dropLast(1),
-                currentPath = previousPath,
+                pathHistory = navigationResult.newHistory,
+                currentPath = navigationResult.newPath,
                 isSelectionMode = false,
                 selectedItems = emptySet()
             )
-            scanDirectory(previousPath)
+            scanDirectory(navigationResult.newPath)
         }
+    }
+
+    fun getDisplayPath(): String {
+        return navigationManager.formatDisplayPath(_uiState.value.currentPath)
     }
 
     // Selection mode
     fun enterSelectionMode(initialItem: LocalItem) {
+        val selectionState = selectionManager.enterSelectionMode(initialItem)
         _uiState.value = _uiState.value.copy(
-            isSelectionMode = true,
-            selectedItems = setOf(initialItem)
+            isSelectionMode = selectionState.isSelectionMode,
+            selectedItems = selectionState.selectedItems
         )
     }
 
     fun exitSelectionMode() {
+        val selectionState = selectionManager.exitSelectionMode()
         _uiState.value = _uiState.value.copy(
-            isSelectionMode = false,
-            selectedItems = emptySet()
+            isSelectionMode = selectionState.isSelectionMode,
+            selectedItems = selectionState.selectedItems
         )
     }
 
     fun toggleItemSelection(item: LocalItem) {
         val currentState = _uiState.value
-        val newSelectedItems = if (currentState.selectedItems.contains(item)) {
-            currentState.selectedItems - item
-        } else {
-            currentState.selectedItems + item
-        }
+        val newSelectedItems = selectionManager.toggleItemSelection(
+            currentState.selectedItems,
+            item
+        )
         _uiState.value = currentState.copy(selectedItems = newSelectedItems)
     }
 
     fun selectAll() {
-        _uiState.value = _uiState.value.copy(
-            selectedItems = _uiState.value.localItems.toSet()
-        )
+        val newSelectedItems = selectionManager.selectAll(_uiState.value.localItems)
+        _uiState.value = _uiState.value.copy(selectedItems = newSelectedItems)
     }
 
     fun deselectAll() {
-        _uiState.value = _uiState.value.copy(selectedItems = emptySet())
+        val newSelectedItems = selectionManager.deselectAll()
+        _uiState.value = _uiState.value.copy(selectedItems = newSelectedItems)
+    }
+
+    fun getSelectionStatus(): SelectionManager.SelectionStatus {
+        val currentState = _uiState.value
+        return selectionManager.getSelectionStatus(
+            currentState.selectedItems,
+            currentState.localItems
+        )
     }
 
     // Scan directory
@@ -83,105 +115,14 @@ class LocalFileViewModel(private val context: Context) : ViewModel() {
             _uiState.value = _uiState.value.copy(isRefreshing = true)
             
             try {
-                val allItems = mutableListOf<LocalItem>()
-                val baseDirectories = mutableListOf<File>()
-                
-                // App-specific external files directory
-                val appDownloadsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-                if (appDownloadsDir != null && appDownloadsDir.exists()) {
-                    baseDirectories.add(appDownloadsDir)
-                }
-                
-                // Public Downloads directory
-                try {
-                    val publicDownloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                    if (publicDownloadsDir != null && publicDownloadsDir.exists()) {
-                        baseDirectories.add(publicDownloadsDir)
-                    }
-                } catch (e: Exception) {
-                    println("DEBUG: Cannot access public downloads directory: ${e.message}")
-                }
-                
-                // Scan the specified path within each base directory
-                for (baseDir in baseDirectories) {
-                    val targetDir = if (path.isEmpty()) baseDir else File(baseDir, path)
-                    
-                    if (!targetDir.exists() || !targetDir.isDirectory) continue
-                    
-                    println("DEBUG: Scanning directory: ${targetDir.absolutePath}")
-                    
-                    val children = targetDir.listFiles() ?: continue
-                    
-                    for (child in children) {
-                        when {
-                            child.isDirectory -> {
-                                val subFiles = child.listFiles() ?: emptyArray()
-                                var hasZipFiles = false
-                                var hasSubfolders = false
-                                var zipCount = 0
-                                
-                                for (subFile in subFiles) {
-                                    when {
-                                        subFile.isFile && subFile.extension.lowercase() == "zip" -> {
-                                            hasZipFiles = true
-                                            zipCount++
-                                        }
-                                        subFile.isDirectory -> {
-                                            val subDirFiles = subFile.listFiles()
-                                            if (!subDirFiles.isNullOrEmpty()) {
-                                                hasSubfolders = true
-                                            }
-                                        }
-                                    }
-                                }
-                                
-                                if (hasZipFiles || hasSubfolders) {
-                                    val relativePath = if (path.isEmpty()) 
-                                        child.name 
-                                    else 
-                                        "$path/${child.name}"
-                                    
-                                    allItems.add(
-                                        LocalItem.Folder(
-                                            name = child.name,
-                                            path = relativePath,
-                                            lastModified = child.lastModified(),
-                                            zipCount = zipCount
-                                        )
-                                    )
-                                }
-                            }
-                            child.isFile && child.extension.lowercase() == "zip" -> {
-                                val relativePath = if (path.isEmpty()) 
-                                    child.name 
-                                else 
-                                    "$path/${child.name}"
-                                
-                                allItems.add(
-                                    LocalItem.ZipFile(
-                                        name = child.name,
-                                        path = relativePath,
-                                        lastModified = child.lastModified(),
-                                        size = child.length(),
-                                        file = child
-                                    )
-                                )
-                            }
-                        }
-                    }
-                }
-                
-                // Remove duplicates and sort
-                val sortedItems = allItems
-                    .distinctBy { it.path }
-                    .sortedWith(compareBy<LocalItem> { it !is LocalItem.Folder }.thenBy { it.name })
+                val items = repository.scanDirectory(path)
                 
                 _uiState.value = _uiState.value.copy(
-                    localItems = sortedItems,
+                    localItems = items,
                     isRefreshing = false
                 )
                 
-                println("DEBUG: Found ${sortedItems.size} items in path '$path'")
+                println("DEBUG: Found ${items.size} items in path '$path'")
                 
             } catch (e: Exception) {
                 println("DEBUG: Error scanning directory '$path': ${e.message}")
@@ -193,62 +134,24 @@ class LocalFileViewModel(private val context: Context) : ViewModel() {
 
     // Delete operations
     fun deleteFile(item: LocalItem.ZipFile): Boolean {
-        return try {
-            item.file.delete()
-        } catch (e: Exception) {
-            println("DEBUG: Failed to delete file: ${e.message}")
-            false
+        var result = false
+        viewModelScope.launch {
+            result = repository.deleteFile(item)
         }
+        return result
     }
 
     fun deleteFolder(item: LocalItem.Folder): Boolean {
-        return try {
-            val baseDirectories = mutableListOf<File>()
-            
-            val appDownloadsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-            if (appDownloadsDir != null && appDownloadsDir.exists()) {
-                baseDirectories.add(appDownloadsDir)
-            }
-            
-            try {
-                val publicDownloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                if (publicDownloadsDir != null && publicDownloadsDir.exists()) {
-                    baseDirectories.add(publicDownloadsDir)
-                }
-            } catch (e: Exception) {
-                println("DEBUG: Cannot access public downloads directory: ${e.message}")
-            }
-            
-            var deleted = false
-            for (baseDir in baseDirectories) {
-                val folderFile = File(baseDir, item.path)
-                if (folderFile.exists() && folderFile.isDirectory) {
-                    deleted = folderFile.deleteRecursively() || deleted
-                }
-            }
-            
-            deleted
-        } catch (e: Exception) {
-            println("DEBUG: Failed to delete folder: ${e.message}")
-            false
+        var result = false
+        viewModelScope.launch {
+            result = repository.deleteFolder(item)
         }
+        return result
     }
 
     fun deleteSelectedItems() {
         viewModelScope.launch {
-            var successCount = 0
-            var failCount = 0
-            
-            _uiState.value.selectedItems.forEach { item ->
-                val success = when (item) {
-                    is LocalItem.ZipFile -> deleteFile(item)
-                    is LocalItem.Folder -> deleteFolder(item)
-                }
-                
-                if (success) successCount++ else failCount++
-            }
-            
-            println("DEBUG: Deleted $successCount items, failed to delete $failCount items")
+            val (successCount, failCount) = repository.deleteItems(_uiState.value.selectedItems)
             
             // Clear selection and refresh
             _uiState.value = _uiState.value.copy(
@@ -259,6 +162,7 @@ class LocalFileViewModel(private val context: Context) : ViewModel() {
         }
     }
 
+    // Dialog state management
     fun setItemToDelete(item: LocalItem?) {
         _uiState.value = _uiState.value.copy(itemToDelete = item)
     }
@@ -275,43 +179,11 @@ class LocalFileViewModel(private val context: Context) : ViewModel() {
         fun provideFactory(context: Context): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                return LocalFileViewModel(context) as T
+                val repository = LocalFileRepository(context)
+                val navigationManager = LocalFileNavigationManager()
+                val selectionManager = SelectionManager()
+                return LocalFileViewModel(repository, navigationManager, selectionManager) as T
             }
         }
     }
-}
-
-// UI State
-data class LocalFileUiState(
-    val localItems: List<LocalItem> = emptyList(),
-    val isRefreshing: Boolean = false,
-    val currentPath: String = "",
-    val pathHistory: List<String> = emptyList(),
-    val isSelectionMode: Boolean = false,
-    val selectedItems: Set<LocalItem> = emptySet(),
-    val showDeleteConfirmDialog: Boolean = false,
-    val itemToDelete: LocalItem? = null,
-    val showDeleteZipWithPermissionDialog: Boolean = false
-)
-
-// Data models
-sealed class LocalItem {
-    abstract val name: String
-    abstract val path: String
-    abstract val lastModified: Long
-    
-    data class Folder(
-        override val name: String,
-        override val path: String,
-        override val lastModified: Long,
-        val zipCount: Int = 0
-    ) : LocalItem()
-    
-    data class ZipFile(
-        override val name: String,
-        override val path: String,
-        override val lastModified: Long,
-        val size: Long,
-        val file: File
-    ) : LocalItem()
 }
