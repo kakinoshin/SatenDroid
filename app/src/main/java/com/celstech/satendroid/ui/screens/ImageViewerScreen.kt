@@ -67,16 +67,17 @@ fun ImageViewerScreen(
     var showPageSlider by remember { mutableStateOf(false) }
     var sliderValue by remember { mutableFloatStateOf(0f) }
     
-    // Update slider value when page changes
+    // Update slider value when page changes (only when slider is not shown)
     LaunchedEffect(pagerState.currentPage) {
-        sliderValue = pagerState.currentPage.toFloat()
+        if (!showPageSlider) {
+            sliderValue = pagerState.currentPage.toFloat()
+        }
     }
     
-    // Auto-hide slider after 3 seconds when shown
+    // Initialize slider value when slider is first shown
     LaunchedEffect(showPageSlider) {
         if (showPageSlider) {
-            delay(3000)
-            showPageSlider = false
+            sliderValue = pagerState.currentPage.toFloat()
         }
     }
 
@@ -90,7 +91,7 @@ fun ImageViewerScreen(
             state = pagerState,
             modifier = Modifier.fillMaxSize(),
             key = { index -> imageFiles[index].absolutePath },
-            userScrollEnabled = true
+            userScrollEnabled = !showPageSlider // Disable swipe when slider is shown
         ) { index ->
             Image(
                 painter = rememberAsyncImagePainter(model = imageFiles[index]),
@@ -100,35 +101,56 @@ fun ImageViewerScreen(
             )
         }
 
-        // Top clickable area for going back
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(120.dp)
-                .clickable { onBackToFiles() }
-                .align(Alignment.TopCenter)
-        )
+        // Top clickable area for going back (only when slider is not shown)
+        if (!showPageSlider) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(120.dp)
+                    .clickable { onBackToFiles() }
+                    .align(Alignment.TopCenter)
+            )
+        }
 
-        // Center clickable area for toggling top bar
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(200.dp)
-                .clickable { onToggleTopBar() }
-                .align(Alignment.Center)
-        )
+        // Center clickable area for toggling top bar (only when slider is not shown)
+        if (!showPageSlider) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(200.dp)
+                    .clickable { onToggleTopBar() }
+                    .align(Alignment.Center)
+            )
+        }
 
-        // Bottom clickable area for showing page slider
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(120.dp)
-                .clickable { showPageSlider = !showPageSlider }
-                .align(Alignment.BottomCenter)
-        )
+        // Bottom clickable area for showing page slider (only when slider is not shown)
+        if (!showPageSlider) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(120.dp)
+                    .clickable { showPageSlider = true }
+                    .align(Alignment.BottomCenter)
+            )
+        }
+
+        // Full screen clickable overlay when slider is shown (to hide slider and jump to page)
+        if (showPageSlider) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable {
+                        val targetPage = sliderValue.roundToInt().coerceIn(0, imageFiles.size - 1)
+                        coroutineScope.launch {
+                            pagerState.animateScrollToPage(targetPage)
+                            showPageSlider = false
+                        }
+                    }
+            )
+        }
 
         // Top bar with image info
-        if (showTopBar) {
+        if (showTopBar && !showPageSlider) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -180,6 +202,7 @@ fun ImageViewerScreen(
                     .fillMaxWidth()
                     .background(Color.Black.copy(alpha = 0.9f))
                     .padding(16.dp)
+                    .clickable { /* Consume clicks to prevent hiding slider */ }
             ) {
                 Column {
                     // Thumbnail and file info section
@@ -197,7 +220,7 @@ fun ImageViewerScreen(
                                 painter = rememberAsyncImagePainter(model = targetFile),
                                 contentDescription = "Thumbnail",
                                 modifier = Modifier
-                                    .size(60.dp)
+                                    .size(120.dp)
                                     .clip(RoundedCornerShape(8.dp)),
                                 contentScale = ContentScale.Crop
                             )
@@ -230,12 +253,6 @@ fun ImageViewerScreen(
                         onValueChange = { newValue ->
                             sliderValue = newValue
                         },
-                        onValueChangeFinished = {
-                            val targetPage = sliderValue.roundToInt().coerceIn(0, imageFiles.size - 1)
-                            coroutineScope.launch {
-                                pagerState.animateScrollToPage(targetPage)
-                            }
-                        },
                         valueRange = 0f..(imageFiles.size - 1).toFloat(),
                         steps = if (imageFiles.size > 2) imageFiles.size - 2 else 0,
                         colors = SliderDefaults.colors(
@@ -249,7 +266,7 @@ fun ImageViewerScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     
                     Text(
-                        text = "Tap bottom area to show/hide slider",
+                        text = "Tap outside slider area to jump to selected page",
                         color = Color.White.copy(alpha = 0.6f),
                         style = MaterialTheme.typography.bodySmall,
                         textAlign = TextAlign.Center,
