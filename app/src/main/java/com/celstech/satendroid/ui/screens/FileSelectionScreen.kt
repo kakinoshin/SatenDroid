@@ -43,7 +43,9 @@ import java.io.File
  */
 @Composable
 fun FileSelectionScreen(
+    initialPath: String = "",
     onFileSelected: (File) -> Unit,
+    onDirectoryChanged: (String) -> Unit,
     onOpenFromDevice: () -> Unit,
     onOpenFromDropbox: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -57,7 +59,12 @@ fun FileSelectionScreen(
 
     // Scan for files on first load
     LaunchedEffect(Unit) {
-        viewModel.scanDirectory("")
+        viewModel.scanDirectory(initialPath)
+    }
+    
+    // ディレクトリパスが変更されたときに通知
+    LaunchedEffect(uiState.currentPath) {
+        onDirectoryChanged(uiState.currentPath)
     }
 
     Column(

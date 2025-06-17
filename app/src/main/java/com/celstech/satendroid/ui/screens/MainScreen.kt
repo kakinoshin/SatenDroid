@@ -43,6 +43,9 @@ fun MainScreen() {
     var showTopBar by remember { mutableStateOf(false) }
     var currentZipUri by remember { mutableStateOf<Uri?>(null) }
     var currentZipFile by remember { mutableStateOf<File?>(null) }
+    
+    // State for directory navigation - ファイル選択画面の現在のパスを保持
+    var savedDirectoryPath by remember { mutableStateOf("") }
 
     // Zip image handler
     val zipImageHandler = remember { ZipImageHandler(context) }
@@ -121,6 +124,7 @@ fun MainScreen() {
     when (currentView) {
         is ViewState.LocalFileList -> {
             FileSelectionScreen(
+                initialPath = savedDirectoryPath,
                 onFileSelected = { file ->
                     isLoading = true
                     currentZipUri = Uri.fromFile(file)
@@ -143,6 +147,10 @@ fun MainScreen() {
                             isLoading = false
                         }
                     }
+                },
+                onDirectoryChanged = { path ->
+                    // 現在のディレクトリパスを保存
+                    savedDirectoryPath = path
                 },
                 onOpenFromDevice = {
                     if (storagePermissionState.status.isGranted) {
