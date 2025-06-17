@@ -46,6 +46,7 @@ fun FileSelectionScreen(
     onFileSelected: (File) -> Unit,
     onOpenFromDevice: () -> Unit,
     onOpenFromDropbox: () -> Unit,
+    onOpenSettings: () -> Unit,
     isLoading: Boolean
 ) {
     val context = LocalContext.current
@@ -66,19 +67,34 @@ fun FileSelectionScreen(
             .padding(16.dp)
     ) {
         // Header
-        Text(
-            text = "SatenDroid",
-            style = MaterialTheme.typography.headlineLarge,
-            color = MaterialTheme.colorScheme.onBackground,
-            modifier = Modifier.padding(bottom = 8.dp)
-        )
-
-        Text(
-            text = "ZIP Image Viewer",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
-            modifier = Modifier.padding(bottom = 24.dp)
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(
+                    text = "SatenDroid",
+                    style = MaterialTheme.typography.headlineLarge,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                
+                Text(
+                    text = "ZIP Image Viewer",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
+                )
+            }
+            
+            TextButton(
+                onClick = onOpenSettings,
+                enabled = !isLoading
+            ) {
+                Text("⚙️ 設定")
+            }
+        }
+        
+        Spacer(modifier = Modifier.height(16.dp))
 
         // Action buttons
         Row(

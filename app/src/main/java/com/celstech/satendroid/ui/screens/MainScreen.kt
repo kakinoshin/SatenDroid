@@ -41,6 +41,8 @@ fun MainScreen() {
     var imageFiles by remember { mutableStateOf<List<File>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
     var showTopBar by remember { mutableStateOf(false) }
+    var currentZipUri by remember { mutableStateOf<Uri?>(null) }
+    var currentZipFile by remember { mutableStateOf<File?>(null) }
 
     // Zip image handler
     val zipImageHandler = remember { ZipImageHandler(context) }
@@ -56,6 +58,8 @@ fun MainScreen() {
     ) { uri: Uri? ->
         uri?.let {
             isLoading = true
+            currentZipUri = uri
+            currentZipFile = null
 
             // Clear previous extracted files if any
             if (imageFiles.isNotEmpty()) {
@@ -81,6 +85,23 @@ fun MainScreen() {
     // Pager state for image viewing
     val pagerState = rememberPagerState { imageFiles.size }
 
+    // 保存された位置を復元
+    LaunchedEffect(imageFiles, currentZipUri) {
+        if (imageFiles.isNotEmpty() && currentZipUri != null) {
+            val savedPosition = zipImageHandler.getSavedPosition(currentZipUri!!, currentZipFile)
+            if (savedPosition != null && savedPosition < imageFiles.size) {
+                pagerState.animateScrollToPage(savedPosition)
+            }
+        }
+    }
+
+    // 現在の位置を保存
+    LaunchedEffect(pagerState.currentPage, currentZipUri) {
+        if (currentZipUri != null && imageFiles.isNotEmpty()) {
+            zipImageHandler.saveCurrentPosition(currentZipUri!!, pagerState.currentPage, currentZipFile)
+        }
+    }
+
     // Auto-hide top bar after 3 seconds when manually shown
     LaunchedEffect(showTopBar) {
         if (showTopBar && imageFiles.isNotEmpty()) {
@@ -102,6 +123,9 @@ fun MainScreen() {
             FileSelectionScreen(
                 onFileSelected = { file ->
                     isLoading = true
+                    currentZipUri = Uri.fromFile(file)
+                    currentZipFile = file
+                    
                     // Clear previous extracted files if any
                     if (imageFiles.isNotEmpty()) {
                         zipImageHandler.clearExtractedFiles(context, imageFiles)
@@ -130,6 +154,9 @@ fun MainScreen() {
                 onOpenFromDropbox = {
                     currentView = ViewState.DropboxBrowser
                 },
+                onOpenSettings = {
+                    currentView = ViewState.Settings
+                },
                 isLoading = isLoading
             )
         }
@@ -143,6 +170,8 @@ fun MainScreen() {
                 onBackToFiles = {
                     zipImageHandler.clearExtractedFiles(context, imageFiles)
                     imageFiles = emptyList()
+                    currentZipUri = null
+                    currentZipFile = null
                     currentView = ViewState.LocalFileList
                 }
             )
@@ -155,6 +184,15 @@ fun MainScreen() {
                     currentView = ViewState.LocalFileList
                 },
                 onDismiss = {
+                    currentView = ViewState.LocalFileList
+                }
+            )
+        }
+
+        is ViewState.Settings -> {
+            SettingsScreen(
+                cacheManager = zipImageHandler.getCacheManager(),
+                onBackPressed = {
                     currentView = ViewState.LocalFileList
                 }
             )

@@ -3,12 +3,14 @@ package com.celstech.satendroid.utils
 import android.content.Context
 import android.net.Uri
 import android.provider.MediaStore
+import com.celstech.satendroid.cache.ImageCacheManager
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.util.zip.ZipInputStream
 
 class ZipImageHandler(private val context: Context) {
+    private val cacheManager = ImageCacheManager(context)
     fun extractImagesFromZip(zipUri: Uri): List<File> {
         val extractedImageFiles = mutableListOf<File>()
 
@@ -95,6 +97,32 @@ class ZipImageHandler(private val context: Context) {
             }
         }
         android.util.Log.e("ZipImageHandler", "[END] clearExtractedFiles")
+    }
+
+    /**
+     * キャッシュマネージャーを取得
+     */
+    fun getCacheManager(): ImageCacheManager = cacheManager
+
+    /**
+     * 現在の表示位置を保存
+     */
+    fun saveCurrentPosition(zipUri: Uri, imageIndex: Int, zipFile: File? = null) {
+        cacheManager.saveCurrentPosition(zipUri, imageIndex, zipFile)
+    }
+
+    /**
+     * 保存された表示位置を取得
+     */
+    fun getSavedPosition(zipUri: Uri, zipFile: File? = null): Int? {
+        return cacheManager.getSavedPosition(zipUri, zipFile)
+    }
+
+    /**
+     * ZIPファイル削除時の処理
+     */
+    fun onZipFileDeleted(zipUri: Uri, zipFile: File? = null) {
+        cacheManager.onFileDeleted(zipUri, zipFile)
     }
 
     // ファイルのUriを取得するヘルパー

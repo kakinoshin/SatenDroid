@@ -7,4 +7,5 @@ sealed class ViewState {
     object LocalFileList : ViewState()
     object ImageViewer : ViewState()
     object DropboxBrowser : ViewState()
+    object Settings : ViewState()
 }

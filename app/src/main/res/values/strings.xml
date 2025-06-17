@@ -1,3 +1,29 @@
 <resources>
     <string name="app_name">SatenDroid</string>
+    
+    <!-- Settings screen -->
+    <string name="settings">設定</string>
+    <string name="cache_settings">キャッシュ設定</string>
+    <string name="cache_function">キャッシュ機能</string>
+    <string name="cache_function_description">前回の表示位置を記憶します</string>
+    <string name="clear_cache_on_delete">ファイル削除時にキャッシュを削除</string>
+    <string name="clear_cache_on_delete_enabled">削除されたファイルのキャッシュを自動削除</string>
+    <string name="clear_cache_on_delete_disabled">削除されたファイルのキャッシュを保持</string>
+    <string name="clear_all_cache">全てのキャッシュを削除</string>
+    <string name="app_about">アプリについて</string>
+    
+    <!-- Dialog messages -->
+    <string name="cache_info_title">キャッシュ機能について</string>
+    <string name="cache_info_message">キャッシュ機能を有効にすると、ZIPファイルを開いた際に前回表示していた画像の位置から表示を開始します。この機能により、長い画像シリーズを途中まで見た後、後で続きから見ることができます。</string>
+    <string name="delete_behavior_info_title">ファイル削除時の動作について</string>
+    <string name="delete_behavior_info_message">この設定を有効にすると、ZIPファイルを削除した際に、そのファイルに関連するキャッシュデータ（表示位置）も自動的に削除されます。無効にした場合、削除されたファイルのキャッシュデータは保持され、同じファイルを再度追加した際に前回の位置から表示されます。</string>
+    <string name="confirm_clear_cache_title">キャッシュを削除</string>
+    <string name="confirm_clear_cache_message">全てのキャッシュデータを削除しますか？この操作は元に戻せません。</string>
+    
+    <!-- Common -->
+    <string name="ok">OK</string>
+    <string name="cancel">キャンセル</string>
+    <string name="delete">削除</string>
+    <string name="back">戻る</string>
+    <string name="detail_info">詳細情報</string>
 </resources>
