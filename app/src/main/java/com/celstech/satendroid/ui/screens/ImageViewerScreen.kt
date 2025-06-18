@@ -1,5 +1,7 @@
 package com.celstech.satendroid.ui.screens
 
+import android.app.Activity
+import android.view.View
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -34,6 +36,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -47,9 +50,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import coil.compose.rememberAsyncImagePainter
 import com.celstech.satendroid.navigation.FileNavigationManager
 import kotlinx.coroutines.launch
@@ -75,10 +82,45 @@ fun ImageViewerScreen(
 ) {
     val coroutineScope = rememberCoroutineScope()
     val reverseSwipeDirection by cacheManager.reverseSwipeDirection.collectAsState()
+    val context = LocalContext.current
     
     // State for page jump slider
     var showPageSlider by remember { mutableStateOf(false) }
     var sliderValue by remember { mutableFloatStateOf(0f) }
+    
+    // System UI visibility control
+    fun setSystemUIVisibility(visible: Boolean) {
+        val activity = context as? Activity ?: return
+        val window = activity.window
+        val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
+        
+        if (visible) {
+            // Show status bar and navigation bar
+            windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
+        } else {
+            // Hide status bar and navigation bar
+            windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
+            windowInsetsController.systemBarsBehavior = 
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+    }
+    
+    // Control system UI visibility based on showTopBar state
+    LaunchedEffect(showTopBar) {
+        setSystemUIVisibility(showTopBar)
+    }
+    
+    // Hide system UI when component is first displayed
+    LaunchedEffect(Unit) {
+        setSystemUIVisibility(false)
+    }
+    
+    // Restore system UI when leaving the screen
+    DisposableEffect(Unit) {
+        onDispose {
+            setSystemUIVisibility(true)
+        }
+    }
     
     // Update slider value when page changes (only when slider is not shown)
     LaunchedEffect(pagerState.currentPage) {
@@ -329,7 +371,7 @@ fun ImageViewerScreen(
                     Spacer(modifier = Modifier.height(8.dp))
 
                     Text(
-                        text = "Tap top area to go back to file list",
+                        text = "上部タップ：ファイル一覧に戻る　中央タップ：UI非表示",
                         color = Color.White.copy(alpha = 0.6f),
                         style = MaterialTheme.typography.bodySmall,
                         textAlign = TextAlign.Center,
@@ -415,7 +457,7 @@ fun ImageViewerScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     
                     Text(
-                        text = "Tap outside slider area to jump to selected page",
+                        text = "スライダー以外の場所をタップして選択したページにジャンプ",
                         color = Color.White.copy(alpha = 0.6f),
                         style = MaterialTheme.typography.bodySmall,
                         textAlign = TextAlign.Center,
