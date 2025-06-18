@@ -23,6 +23,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.NavigateBefore
+import androidx.compose.material.icons.automirrored.filled.NavigateNext
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -45,7 +51,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.rememberAsyncImagePainter
-import kotlinx.coroutines.delay
+import com.celstech.satendroid.navigation.FileNavigationManager
 import kotlinx.coroutines.launch
 import java.io.File
 import kotlin.math.roundToInt
@@ -57,10 +63,14 @@ import kotlin.math.roundToInt
 @Composable
 fun ImageViewerScreen(
     imageFiles: List<File>,
+    currentZipFile: File?,
     pagerState: PagerState,
     showTopBar: Boolean,
     onToggleTopBar: () -> Unit,
     onBackToFiles: () -> Unit,
+    onNavigateToPreviousFile: (() -> Unit)? = null,
+    onNavigateToNextFile: (() -> Unit)? = null,
+    fileNavigationInfo: FileNavigationManager.NavigationInfo? = null,
     cacheManager: com.celstech.satendroid.cache.ImageCacheManager
 ) {
     val coroutineScope = rememberCoroutineScope()
@@ -138,6 +148,130 @@ fun ImageViewerScreen(
             )
         }
 
+        // File navigation buttons - Show when at first image and there's a previous file
+        if (!showPageSlider && fileNavigationInfo != null && pagerState.currentPage == 0 && fileNavigationInfo.hasPreviousFile) {
+            Button(
+                onClick = { onNavigateToPreviousFile?.invoke() },
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.Black.copy(alpha = 0.7f),
+                    contentColor = Color.White
+                )
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.NavigateBefore,
+                        contentDescription = "Previous file"
+                    )
+                    Text("前のファイル")
+                }
+            }
+        }
+
+        // File navigation buttons - Show when at last image and there's a next file
+        if (!showPageSlider && fileNavigationInfo != null && pagerState.currentPage == imageFiles.size - 1 && fileNavigationInfo.hasNextFile) {
+            Button(
+                onClick = { onNavigateToNextFile?.invoke() },
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.Black.copy(alpha = 0.7f),
+                    contentColor = Color.White
+                )
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text("次のファイル")
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.NavigateNext,
+                        contentDescription = "Next file"
+                    )
+                }
+            }
+        }
+
+        // File navigation status indicator (when navigation info is available)
+        if (!showPageSlider && fileNavigationInfo != null && fileNavigationInfo.totalFiles > 1) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(16.dp)
+                    .background(
+                        Color.Black.copy(alpha = 0.7f),
+                        RoundedCornerShape(8.dp)
+                    )
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Column {
+                    Text(
+                        text = "ファイル ${fileNavigationInfo.positionText}",
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    if (currentZipFile != null) {
+                        Text(
+                            text = currentZipFile.name,
+                            color = Color.White.copy(alpha = 0.8f),
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
+
+        // No previous/next file indicators
+        if (!showPageSlider && fileNavigationInfo != null) {
+            // No previous file indicator (when at first image and no previous file)
+            if (pagerState.currentPage == 0 && !fileNavigationInfo.hasPreviousFile) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .padding(16.dp)
+                        .background(
+                            Color.Gray.copy(alpha = 0.5f),
+                            RoundedCornerShape(8.dp)
+                        )
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text = "最初のファイル",
+                        color = Color.White.copy(alpha = 0.7f),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+            
+            // No next file indicator (when at last image and no next file)
+            if (pagerState.currentPage == imageFiles.size - 1 && !fileNavigationInfo.hasNextFile) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(16.dp)
+                        .background(
+                            Color.Gray.copy(alpha = 0.5f),
+                            RoundedCornerShape(8.dp)
+                        )
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text = "最後のファイル",
+                        color = Color.White.copy(alpha = 0.7f),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        }
+
         // Full screen clickable overlay when slider is shown (to hide slider and jump to page)
         if (showPageSlider) {
             Box(
@@ -175,6 +309,17 @@ fun ImageViewerScreen(
                         Text(
                             text = imageFiles[pagerState.currentPage].name,
                             color = Color.White.copy(alpha = 0.8f),
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    // Show current zip file info
+                    if (currentZipFile != null) {
+                        Text(
+                            text = "from: ${currentZipFile.name}",
+                            color = Color.White.copy(alpha = 0.6f),
                             style = MaterialTheme.typography.bodySmall,
                             textAlign = TextAlign.Center,
                             modifier = Modifier.fillMaxWidth()

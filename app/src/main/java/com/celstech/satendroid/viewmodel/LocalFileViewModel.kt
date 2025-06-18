@@ -1,12 +1,12 @@
 package com.celstech.satendroid.viewmodel
 
 import android.content.Context
-import android.net.Uri
 import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.celstech.satendroid.navigation.LocalFileNavigationManager
+import com.celstech.satendroid.navigation.FileNavigationManager
 import com.celstech.satendroid.repository.LocalFileRepository
 import com.celstech.satendroid.selection.SelectionManager
 import com.celstech.satendroid.ui.models.LocalFileUiState
@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.io.File
 
 /**
  * ローカルファイル管理のViewModel
@@ -25,7 +26,8 @@ class LocalFileViewModel(
     private val repository: LocalFileRepository,
     private val navigationManager: LocalFileNavigationManager,
     private val selectionManager: SelectionManager,
-    private val zipImageHandler: ZipImageHandler
+    private val zipImageHandler: ZipImageHandler,
+    private val fileNavigationManager: FileNavigationManager
 ) : ViewModel() {
 
     // UI state
@@ -218,7 +220,14 @@ class LocalFileViewModel(
                 val navigationManager = LocalFileNavigationManager()
                 val selectionManager = SelectionManager()
                 val zipImageHandler = ZipImageHandler(context)
-                return LocalFileViewModel(repository, navigationManager, selectionManager, zipImageHandler) as T
+                val fileNavigationManager = FileNavigationManager(context)
+                return LocalFileViewModel(
+                    repository, 
+                    navigationManager, 
+                    selectionManager, 
+                    zipImageHandler, 
+                    fileNavigationManager
+                ) as T
             }
         }
     }
