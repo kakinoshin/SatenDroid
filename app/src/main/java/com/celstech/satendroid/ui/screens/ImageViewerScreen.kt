@@ -88,20 +88,74 @@ fun ImageViewerScreen(
     var showPageSlider by remember { mutableStateOf(false) }
     var sliderValue by remember { mutableFloatStateOf(0f) }
     
-    // System UI visibility control
+    // System UI visibility control with Fire OS compatibility
     fun setSystemUIVisibility(visible: Boolean) {
         val activity = context as? Activity ?: return
         val window = activity.window
-        val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
         
-        if (visible) {
-            // Show status bar and navigation bar
-            windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
-        } else {
-            // Hide status bar and navigation bar
-            windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
-            windowInsetsController.systemBarsBehavior = 
-                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        try {
+            if (visible) {
+                // Show status bar and navigation bar
+                // 新しいAPI
+                val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
+                windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
+                
+                // 古いAPI（互換性のため）
+                @Suppress("DEPRECATION")
+                window.decorView.systemUiVisibility = (
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                )
+                
+                // Fire OS特有の対応
+                window.statusBarColor = android.graphics.Color.BLACK
+                window.navigationBarColor = android.graphics.Color.BLACK
+            } else {
+                // Hide status bar and navigation bar
+                // 新しいAPI
+                val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
+                windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
+                windowInsetsController.systemBarsBehavior = 
+                    WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                
+                // 古いAPI（Fire OS互換性のため）
+                @Suppress("DEPRECATION")
+                window.decorView.systemUiVisibility = (
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    or View.SYSTEM_UI_FLAG_FULLSCREEN
+                    or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                )
+                
+                // Fire OS特有の対応 - ステータスバーとナビゲーションバーを透明に
+                window.statusBarColor = android.graphics.Color.TRANSPARENT
+                window.navigationBarColor = android.graphics.Color.TRANSPARENT
+                
+                // フルスクリーンフラグを明示的に設定
+                @Suppress("DEPRECATION")
+                window.addFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN)
+                window.addFlags(android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS)
+            }
+        } catch (e: Exception) {
+            // Fire OSで例外が発生した場合のフォールバック
+            android.util.Log.w("ImageViewer", "Failed to set system UI visibility: ${e.message}")
+            
+            // 最低限の古いAPIでの対応
+            @Suppress("DEPRECATION")
+            if (visible) {
+                window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+                window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN)
+            } else {
+                window.decorView.systemUiVisibility = (
+                    View.SYSTEM_UI_FLAG_FULLSCREEN
+                    or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                )
+                window.addFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN)
+            }
         }
     }
     
@@ -240,36 +294,7 @@ fun ImageViewerScreen(
             }
         }
 
-        // File navigation status indicator (when navigation info is available)
-        if (!showPageSlider && fileNavigationInfo != null && fileNavigationInfo.totalFiles > 1) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(16.dp)
-                    .background(
-                        Color.Black.copy(alpha = 0.7f),
-                        RoundedCornerShape(8.dp)
-                    )
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
-            ) {
-                Column {
-                    Text(
-                        text = "ファイル ${fileNavigationInfo.positionText}",
-                        color = Color.White,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    if (currentZipFile != null) {
-                        Text(
-                            text = currentZipFile.name,
-                            color = Color.White.copy(alpha = 0.8f),
-                            style = MaterialTheme.typography.bodySmall,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-            }
-        }
+
 
         // No previous/next file indicators
         if (!showPageSlider && fileNavigationInfo != null) {
