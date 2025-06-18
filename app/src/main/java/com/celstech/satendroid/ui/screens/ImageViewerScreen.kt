@@ -29,6 +29,7 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -59,9 +60,11 @@ fun ImageViewerScreen(
     pagerState: PagerState,
     showTopBar: Boolean,
     onToggleTopBar: () -> Unit,
-    onBackToFiles: () -> Unit
+    onBackToFiles: () -> Unit,
+    cacheManager: com.celstech.satendroid.cache.ImageCacheManager
 ) {
     val coroutineScope = rememberCoroutineScope()
+    val reverseSwipeDirection by cacheManager.reverseSwipeDirection.collectAsState()
     
     // State for page jump slider
     var showPageSlider by remember { mutableStateOf(false) }
@@ -91,7 +94,8 @@ fun ImageViewerScreen(
             state = pagerState,
             modifier = Modifier.fillMaxSize(),
             key = { index -> imageFiles[index].absolutePath },
-            userScrollEnabled = !showPageSlider // Disable swipe when slider is shown
+            userScrollEnabled = !showPageSlider, // Disable swipe when slider is shown
+            reverseLayout = reverseSwipeDirection
         ) { index ->
             Image(
                 painter = rememberAsyncImagePainter(model = imageFiles[index]),

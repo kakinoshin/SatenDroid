@@ -52,9 +52,11 @@ fun SettingsScreen(
 ) {
     val cacheEnabled by cacheManager.cacheEnabled.collectAsState()
     val clearCacheOnDelete by cacheManager.clearCacheOnDelete.collectAsState()
+    val reverseSwipeDirection by cacheManager.reverseSwipeDirection.collectAsState()
     
     var showCacheInfoDialog by remember { mutableStateOf(false) }
     var showDeleteInfoDialog by remember { mutableStateOf(false) }
+    var showSwipeInfoDialog by remember { mutableStateOf(false) }
     var showConfirmClearDialog by remember { mutableStateOf(false) }
     
     Scaffold(
@@ -181,6 +183,62 @@ fun SettingsScreen(
             
             Spacer(modifier = Modifier.height(24.dp))
             
+            // スワイプ操作設定セクション
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "操作設定",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        IconButton(onClick = { showSwipeInfoDialog = true }) {
+                            Icon(Icons.Default.Info, contentDescription = "詳細情報")
+                        }
+                    }
+                    
+                    Spacer(modifier = Modifier.height(16.dp))
+                    
+                    // スワイプ方向の設定
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "スワイプ方向を逆転",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = if (reverseSwipeDirection) 
+                                    "左スワイプで前のページ、右スワイプで次のページ" 
+                                else 
+                                    "右スワイプで前のページ、左スワイプで次のページ（標準）",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = reverseSwipeDirection,
+                            onCheckedChange = { cacheManager.setReverseSwipeDirection(it) }
+                        )
+                    }
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(24.dp))
+            
             // アプリ情報セクション
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -236,6 +294,17 @@ fun SettingsScreen(
             message = "この設定を有効にすると、ZIPファイルを削除した際に、そのファイルに関連するキャッシュデータ（表示位置）も自動的に削除されます。" +
                     "無効にした場合、削除されたファイルのキャッシュデータは保持され、同じファイルを再度追加した際に前回の位置から表示されます。",
             onDismiss = { showDeleteInfoDialog = false }
+        )
+    }
+    
+    if (showSwipeInfoDialog) {
+        InfoDialog(
+            title = "スワイプ方向について",
+            message = "画像表示画面でのページ送り操作の方向を設定できます。\n\n" +
+                    "【標準】右スワイプで前のページ、左スワイプで次のページ\n" +
+                    "【逆転】左スワイプで前のページ、右スワイプで次のページ\n\n" +
+                    "お好みの操作方法に設定してください。",
+            onDismiss = { showSwipeInfoDialog = false }
         )
     }
     

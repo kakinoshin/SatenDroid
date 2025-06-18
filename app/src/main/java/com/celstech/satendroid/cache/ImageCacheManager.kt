@@ -21,6 +21,7 @@ class ImageCacheManager(private val context: Context) {
         private const val KEY_LAST_ZIP_URI = "last_zip_uri"
         private const val KEY_LAST_IMAGE_INDEX = "last_image_index"
         private const val KEY_LAST_ZIP_HASH = "last_zip_hash"
+        private const val KEY_REVERSE_SWIPE_DIRECTION = "reverse_swipe_direction"
     }
     
     private val sharedPrefs: SharedPreferences = 
@@ -31,6 +32,9 @@ class ImageCacheManager(private val context: Context) {
     
     private val _clearCacheOnDelete = MutableStateFlow(sharedPrefs.getBoolean(KEY_CLEAR_CACHE_ON_DELETE, true))
     val clearCacheOnDelete: StateFlow<Boolean> = _clearCacheOnDelete.asStateFlow()
+    
+    private val _reverseSwipeDirection = MutableStateFlow(sharedPrefs.getBoolean(KEY_REVERSE_SWIPE_DIRECTION, false))
+    val reverseSwipeDirection: StateFlow<Boolean> = _reverseSwipeDirection.asStateFlow()
     
     /**
      * キャッシュ機能の有効/無効を設定
@@ -46,6 +50,14 @@ class ImageCacheManager(private val context: Context) {
     fun setClearCacheOnDelete(clearOnDelete: Boolean) {
         _clearCacheOnDelete.value = clearOnDelete
         sharedPrefs.edit().putBoolean(KEY_CLEAR_CACHE_ON_DELETE, clearOnDelete).apply()
+    }
+    
+    /**
+     * スワイプ方向を逆転するかの設定
+     */
+    fun setReverseSwipeDirection(reverse: Boolean) {
+        _reverseSwipeDirection.value = reverse
+        sharedPrefs.edit().putBoolean(KEY_REVERSE_SWIPE_DIRECTION, reverse).apply()
     }
     
     /**
@@ -151,6 +163,7 @@ class ImageCacheManager(private val context: Context) {
     fun getSettingsSummary(): String {
         val cacheStatus = if (_cacheEnabled.value) "有効" else "無効"
         val deleteStatus = if (_clearCacheOnDelete.value) "削除する" else "保持する"
-        return "キャッシュ機能: $cacheStatus\nファイル削除時: $deleteStatus"
+        val swipeStatus = if (_reverseSwipeDirection.value) "逆転" else "標準"
+        return "キャッシュ機能: $cacheStatus\nファイル削除時: $deleteStatus\nスワイプ方向: $swipeStatus"
     }
 }

@@ -181,7 +181,8 @@ fun MainScreen() {
                     currentZipUri = null
                     currentZipFile = null
                     currentView = ViewState.LocalFileList
-                }
+                },
+                cacheManager = zipImageHandler.getCacheManager()
             )
         }
 
