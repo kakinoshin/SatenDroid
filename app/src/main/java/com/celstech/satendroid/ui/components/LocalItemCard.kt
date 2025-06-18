@@ -1,11 +1,16 @@
 package com.celstech.satendroid.ui.components
 
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Card
@@ -18,9 +23,17 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.celstech.satendroid.ui.models.LocalItem
+import com.celstech.satendroid.ui.models.ReadingStatus
+import com.celstech.satendroid.ui.models.FileNameUtils
 import com.celstech.satendroid.utils.FormatUtils
 
 /**
@@ -59,31 +72,78 @@ fun LocalItemCard(
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Selection checkbox or icon
+            // Selection checkbox
             if (isSelectionMode) {
                 Checkbox(
                     checked = isSelected,
                     onCheckedChange = { onClick() },
                     modifier = Modifier.padding(end = 16.dp)
                 )
-            } else {
-                Text(
-                    text = when (item) {
-                        is LocalItem.Folder -> "📁"
-                        is LocalItem.ZipFile -> "🗜️"
-                    },
-                    style = MaterialTheme.typography.headlineMedium,
-                    modifier = Modifier.padding(end = 16.dp)
-                )
+            }
+            
+            // Thumbnail or icon
+            Box(
+                modifier = Modifier
+                    .size(60.dp)
+                    .padding(end = 16.dp)
+            ) {
+                when (item) {
+                    is LocalItem.Folder -> {
+                        Text(
+                            text = "📁",
+                            style = MaterialTheme.typography.headlineLarge,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    }
+                    is LocalItem.ZipFile -> {
+                        if (item.thumbnail != null) {
+                            Image(
+                                bitmap = item.thumbnail.asImageBitmap(),
+                                contentDescription = "Thumbnail",
+                                modifier = Modifier
+                                    .size(60.dp)
+                                    .clip(RoundedCornerShape(8.dp)),
+                                contentScale = ContentScale.Crop
+                            )
+                        } else {
+                            Text(
+                                text = "🗜️",
+                                style = MaterialTheme.typography.headlineLarge,
+                                modifier = Modifier.align(Alignment.Center)
+                            )
+                        }
+                        
+                        // Reading status indicator
+                        val statusIndicator = when (item.readingStatus) {
+                            ReadingStatus.UNREAD -> "⚪" // 未読マーク
+                            ReadingStatus.READING -> "🔵" // 読書中マーク
+                            ReadingStatus.COMPLETED -> "✅" // 既読マーク
+                        }
+                        
+                        Text(
+                            text = statusIndicator,
+                            fontSize = 16.sp,
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .background(
+                                    MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .padding(2.dp)
+                        )
+                    }
+                }
             }
 
             Column(
                 modifier = Modifier.weight(1f)
             ) {
+                // File name with truncation
                 Text(
-                    text = item.name,
-                    style = MaterialTheme.typography.bodyLarge,
-                    maxLines = 2
+                    text = FileNameUtils.truncateFileName(item.name, 35),
+                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
 
                 when (item) {
@@ -108,16 +168,35 @@ fun LocalItemCard(
                     }
 
                     is LocalItem.ZipFile -> {
+                        // File size and date
                         Text(
                             text = "${FormatUtils.formatFileSize(item.size)} • ${FormatUtils.formatDate(item.lastModified)}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                         )
 
+                        // Reading progress information
+                        val progressText = when (item.readingStatus) {
+                            ReadingStatus.UNREAD -> "未読"
+                            ReadingStatus.READING -> {
+                                if (item.totalImageCount > 0) {
+                                    "読書中 ${item.currentImageIndex + 1}/${item.totalImageCount}"
+                                } else {
+                                    "読書中"
+                                }
+                            }
+                            ReadingStatus.COMPLETED -> "読了"
+                        }
+                        
                         Text(
-                            text = item.file.parent ?: "Unknown location",
+                            text = progressText,
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            color = when (item.readingStatus) {
+                                ReadingStatus.UNREAD -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                ReadingStatus.READING -> MaterialTheme.colorScheme.primary
+                                ReadingStatus.COMPLETED -> MaterialTheme.colorScheme.tertiary
+                            },
+                            fontWeight = FontWeight.Medium
                         )
                     }
                 }
@@ -125,7 +204,10 @@ fun LocalItemCard(
 
             // Action buttons
             if (!isSelectionMode) {
-                Row {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     // Delete button
                     IconButton(
                         onClick = {
@@ -146,8 +228,7 @@ fun LocalItemCard(
                             is LocalItem.ZipFile -> "▶"
                         },
                         style = MaterialTheme.typography.headlineSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(start = 8.dp)
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
             }

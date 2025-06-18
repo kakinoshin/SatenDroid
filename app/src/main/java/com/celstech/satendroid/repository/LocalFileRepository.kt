@@ -3,14 +3,20 @@ package com.celstech.satendroid.repository
 import android.content.Context
 import android.os.Environment
 import com.celstech.satendroid.ui.models.LocalItem
+import com.celstech.satendroid.utils.LocalItemFactory
+import com.celstech.satendroid.utils.ReadingStatusManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
  * ローカルファイル操作を担当するRepository
+ * サムネイル生成と読書状況管理機能を統合
  */
 class LocalFileRepository(private val context: Context) {
+
+    private val localItemFactory = LocalItemFactory(context)
+    private val readingStatusManager = ReadingStatusManager(context)
 
     /**
      * 指定されたパスのディレクトリをスキャンしてLocalItemリストを取得
@@ -56,7 +62,12 @@ class LocalFileRepository(private val context: Context) {
      */
     suspend fun deleteFile(item: LocalItem.ZipFile): Boolean = withContext(Dispatchers.IO) {
         try {
-            item.file.delete()
+            val success = item.file.delete()
+            if (success) {
+                // 読書状況もクリア
+                localItemFactory.clearReadingStatusForFile(item.path)
+            }
+            success
         } catch (e: Exception) {
             println("DEBUG: Failed to delete file: ${e.message}")
             false
@@ -74,6 +85,8 @@ class LocalFileRepository(private val context: Context) {
             for (baseDir in baseDirectories) {
                 val folderFile = File(baseDir, item.path)
                 if (folderFile.exists() && folderFile.isDirectory) {
+                    // フォルダ内のZIPファイルの読書状況をクリア
+                    clearReadingStatusForFolder(folderFile)
                     deleted = folderFile.deleteRecursively() || deleted
                 }
             }
@@ -106,34 +119,35 @@ class LocalFileRepository(private val context: Context) {
     }
 
     /**
-     * ベースディレクトリリストを取得
+     * ZipFileの読書状況を更新
      */
-    private fun getBaseDirectories(): List<File> {
-        val baseDirectories = mutableListOf<File>()
-        
-        // App-specific external files directory
-        val appDownloadsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-        if (appDownloadsDir != null && appDownloadsDir.exists()) {
-            baseDirectories.add(appDownloadsDir)
-        }
-        
-        // Public Downloads directory
+    suspend fun updateReadingStatus(
+        zipFile: LocalItem.ZipFile,
+        currentIndex: Int,
+        totalCount: Int? = null
+    ): LocalItem.ZipFile {
+        return localItemFactory.updateReadingStatus(zipFile, currentIndex, totalCount)
+    }
+
+    /**
+     * フォルダ内のZIPファイルの読書状況をクリア
+     */
+    private suspend fun clearReadingStatusForFolder(folder: File) {
         try {
-            val publicDownloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            if (publicDownloadsDir != null && publicDownloadsDir.exists()) {
-                baseDirectories.add(publicDownloadsDir)
-            }
+            folder.walk()
+                .filter { it.isFile && it.extension.lowercase() == "zip" }
+                .forEach { zipFile ->
+                    localItemFactory.clearReadingStatusForFile(zipFile.absolutePath)
+                }
         } catch (e: Exception) {
-            println("DEBUG: Cannot access public downloads directory: ${e.message}")
+            println("DEBUG: Failed to clear reading status for folder: ${e.message}")
         }
-        
-        return baseDirectories
     }
 
     /**
      * フォルダアイテムを処理
      */
-    private fun processFolderItem(child: File, path: String): LocalItem.Folder? {
+    private suspend fun processFolderItem(child: File, path: String): LocalItem.Folder? {
         val subFiles = child.listFiles() ?: return null
         var hasZipFiles = false
         var hasSubfolders = false
@@ -160,10 +174,10 @@ class LocalFileRepository(private val context: Context) {
             else 
                 "$path/${child.name}"
             
-            LocalItem.Folder(
-                name = child.name,
-                path = relativePath,
-                lastModified = child.lastModified(),
+            // LocalItemFactoryを使用してサムネイル等を含むFolderアイテムを作成
+            localItemFactory.createFolderItem(
+                folder = child,
+                relativePath = relativePath,
                 zipCount = zipCount
             )
         } else null
@@ -172,18 +186,41 @@ class LocalFileRepository(private val context: Context) {
     /**
      * ZIPファイルアイテムを処理
      */
-    private fun processZipFileItem(child: File, path: String): LocalItem.ZipFile {
+    private suspend fun processZipFileItem(child: File, path: String): LocalItem.ZipFile {
         val relativePath = if (path.isEmpty()) 
             child.name 
         else 
             "$path/${child.name}"
         
-        return LocalItem.ZipFile(
-            name = child.name,
-            path = relativePath,
-            lastModified = child.lastModified(),
-            size = child.length(),
-            file = child
+        // LocalItemFactoryを使用してサムネイル等を含むZipFileアイテムを作成
+        return localItemFactory.createZipFileItem(
+            file = child,
+            relativePath = relativePath
         )
+    }
+
+    /**
+     * ベースディレクトリリストを取得
+     */
+    private fun getBaseDirectories(): List<File> {
+        val baseDirectories = mutableListOf<File>()
+        
+        // App-specific external files directory
+        val appDownloadsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+        if (appDownloadsDir != null && appDownloadsDir.exists()) {
+            baseDirectories.add(appDownloadsDir)
+        }
+        
+        // Public Downloads directory
+        try {
+            val publicDownloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            if (publicDownloadsDir != null && publicDownloadsDir.exists()) {
+                baseDirectories.add(publicDownloadsDir)
+            }
+        } catch (e: Exception) {
+            println("DEBUG: Cannot access public downloads directory: ${e.message}")
+        }
+        
+        return baseDirectories
     }
 }

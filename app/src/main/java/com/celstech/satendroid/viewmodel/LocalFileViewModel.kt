@@ -212,6 +212,43 @@ class LocalFileViewModel(
         _uiState.value = _uiState.value.copy(showDeleteZipWithPermissionDialog = show)
     }
 
+    // Reading status management
+    fun updateReadingStatus(zipFile: LocalItem.ZipFile, currentIndex: Int, totalCount: Int? = null) {
+        viewModelScope.launch {
+            try {
+                val updatedZipFile = repository.updateReadingStatus(zipFile, currentIndex, totalCount)
+                
+                // UIStateのlocalItemsを更新
+                val currentItems = _uiState.value.localItems
+                val updatedItems = currentItems.map { item ->
+                    if (item is LocalItem.ZipFile && item.path == zipFile.path) {
+                        updatedZipFile
+                    } else {
+                        item
+                    }
+                }
+                
+                _uiState.value = _uiState.value.copy(localItems = updatedItems)
+                
+            } catch (e: Exception) {
+                println("DEBUG: Failed to update reading status: ${e.message}")
+                e.printStackTrace()
+            }
+        }
+    }
+
+    fun markAsCompleted(zipFile: LocalItem.ZipFile) {
+        updateReadingStatus(zipFile, zipFile.totalImageCount - 1, zipFile.totalImageCount)
+    }
+
+    fun markAsReading(zipFile: LocalItem.ZipFile, currentIndex: Int) {
+        updateReadingStatus(zipFile, currentIndex, zipFile.totalImageCount)
+    }
+
+    fun markAsUnread(zipFile: LocalItem.ZipFile) {
+        updateReadingStatus(zipFile, 0, zipFile.totalImageCount)
+    }
+
     companion object {
         fun provideFactory(context: Context): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
