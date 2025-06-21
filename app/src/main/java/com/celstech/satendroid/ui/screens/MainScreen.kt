@@ -69,25 +69,35 @@ fun MainScreen() {
     // File navigation manager
     val fileNavigationManager = remember { FileNavigationManager(context) }
 
-    // メモリ確実クリア関数
-    fun clearMemoryAndFiles() {
-        println("DEBUG: Starting comprehensive memory cleanup")
-        
+    // メモリクリア関数（状態は保持）
+    fun clearMemoryResources() {
+        println("DEBUG: Clearing memory resources only")
+
         // ファイルを削除
         if (imageFiles.isNotEmpty()) {
             zipImageHandler.clearExtractedFiles(context, imageFiles)
         }
-        
+
+        // ガベージコレクションを強制実行
+        System.gc()
+
+        println("DEBUG: Memory resources cleared")
+    }
+
+    // 完全な状態クリア関数
+    fun clearAllStateAndMemory() {
+        println("DEBUG: Starting comprehensive cleanup")
+
+        // リソースをクリア
+        clearMemoryResources()
+
         // 状態をクリア
         imageFiles = emptyList()
         currentZipUri = null
         currentZipFile = null
         fileNavigationInfo = null
-        
-        // ガベージコレクションを強制実行
-        System.gc()
-        
-        println("DEBUG: Memory cleanup completed")
+
+        println("DEBUG: All state and memory cleared")
     }
 
     // Permission state for external storage
@@ -101,33 +111,36 @@ fun MainScreen() {
     ) { uri: Uri? ->
         uri?.let {
             println("DEBUG: ZIP file picked from device")
-            
+
             // 既存のジョブをキャンセル
             currentLoadingJob?.cancel()
-            
+
             isNavigatingToNewFile = true
             isLoading = true
 
-            // メモリクリア
-            clearMemoryAndFiles()
-
-            // Extract images from ZIP
             currentLoadingJob = coroutineScope.launch {
                 try {
-                    // 新しいファイル情報を設定
-                    currentZipUri = uri
-                    currentZipFile = null
+                    // リソースクリア（状態は保持）
+                    clearMemoryResources()
 
                     // 画像を抽出
                     val extractedImages = zipImageHandler.extractImagesFromZip(uri)
 
                     if (extractedImages.isNotEmpty()) {
+                        // 新しい状態を一度に設定
+                        currentZipUri = uri
+                        currentZipFile = null
                         imageFiles = extractedImages
                         currentView = ViewState.ImageViewer
+
                         println("DEBUG: Successfully loaded ZIP from device with ${extractedImages.size} images")
+                    } else {
+                        println("DEBUG: No images found in selected ZIP")
+                        // 画像が見つからない場合は元の状態を保持
                     }
                 } catch (e: Exception) {
                     println("DEBUG: Error loading ZIP from device: ${e.message}")
+                    e.printStackTrace()
                 } finally {
                     isLoading = false
                     isNavigatingToNewFile = false
@@ -161,35 +174,36 @@ fun MainScreen() {
 
         // ファイル移動中フラグを設定
         isNavigatingToNewFile = true
-
-        // メモリクリア
-        clearMemoryAndFiles()
-
         isLoading = true
 
         currentLoadingJob = coroutineScope.launch {
             try {
+                // 古いリソースをクリア（状態は保持してUIを安定させる）
+                clearMemoryResources()
+
                 // PagerStateを即座にリセット（アニメーションなし）
                 println("DEBUG: Resetting pager to page 0")
                 pagerState.scrollToPage(0)
 
-                // 新しいファイル情報を設定
-                println("DEBUG: Setting new file info")
-                currentZipUri = Uri.fromFile(newZipFile)
-                currentZipFile = newZipFile
+                // 新しいファイル情報を準備
+                println("DEBUG: Preparing new file info")
+                val newZipUri = Uri.fromFile(newZipFile)
 
                 // 画像を抽出
                 println("DEBUG: Extracting images from ${newZipFile.name}")
-                val extractedImages = zipImageHandler.extractImagesFromZip(Uri.fromFile(newZipFile))
+                val extractedImages = zipImageHandler.extractImagesFromZip(newZipUri)
                 println("DEBUG: Extracted ${extractedImages.size} images from ${newZipFile.name}")
 
                 if (extractedImages.isNotEmpty()) {
                     // ファイルナビゲーション情報を更新
                     println("DEBUG: Updating file navigation info")
-                    fileNavigationInfo = fileNavigationManager.getNavigationInfo(newZipFile)
+                    val newNavigationInfo = fileNavigationManager.getNavigationInfo(newZipFile)
 
-                    // 画像リストを最後に更新（これによりUI更新がトリガーされる）
-                    println("DEBUG: Setting imageFiles to ${extractedImages.size} images")
+                    // 全ての新しい状態を一度に設定（UIの一貫性を保つ）
+                    println("DEBUG: Updating all state atomically")
+                    currentZipUri = newZipUri
+                    currentZipFile = newZipFile
+                    fileNavigationInfo = newNavigationInfo
                     imageFiles = extractedImages
 
                     // 確実に最初のページを表示
@@ -199,14 +213,24 @@ fun MainScreen() {
                     println("DEBUG: Successfully navigated to ${newZipFile.name}, showing page 0 of ${extractedImages.size}")
                 } else {
                     println("DEBUG: No images found in ${newZipFile.name}")
+                    // 画像が見つからない場合は状態をリセット
+                    currentZipUri = null
+                    currentZipFile = null
+                    fileNavigationInfo = null
+                    imageFiles = emptyList()
                 }
             } catch (e: Exception) {
                 println("DEBUG: Error navigating to file ${newZipFile.name}: ${e.message}")
                 e.printStackTrace()
+
+                // エラー時は状態をリセット
+                currentZipUri = null
+                currentZipFile = null
+                fileNavigationInfo = null
+                imageFiles = emptyList()
             } finally {
                 println("DEBUG: Completing navigation - setting isLoading=false, isNavigatingToNewFile=false")
                 isLoading = false
-                // ファイル移動中フラグをクリア
                 isNavigatingToNewFile = false
             }
         }
@@ -235,13 +259,13 @@ fun MainScreen() {
     DisposableEffect(Unit) {
         onDispose {
             println("DEBUG: MainScreen disposing - cleaning up all resources")
-            
+
             // ジョブをキャンセル
             currentLoadingJob?.cancel()
-            
-            // メモリクリア
-            clearMemoryAndFiles()
-            
+
+            // 完全なクリア
+            clearAllStateAndMemory()
+
             println("DEBUG: MainScreen cleanup completed")
         }
     }
@@ -253,38 +277,38 @@ fun MainScreen() {
                 initialPath = savedDirectoryPath,
                 onFileSelected = { file ->
                     println("DEBUG: File selected: ${file.name}")
-                    
+
                     // 既存のジョブをキャンセル
                     currentLoadingJob?.cancel()
-                    
+
                     isNavigatingToNewFile = true
                     isLoading = true
 
-                    // メモリクリア
-                    clearMemoryAndFiles()
-
                     currentLoadingJob = coroutineScope.launch {
                         try {
-                            // 新しいファイル情報を設定
-                            currentZipUri = Uri.fromFile(file)
-                            currentZipFile = file
+                            // リソースクリア（状態は保持）
+                            clearMemoryResources()
 
                             // 画像を抽出
                             val extractedImages =
                                 zipImageHandler.extractImagesFromZip(Uri.fromFile(file))
 
                             if (extractedImages.isNotEmpty()) {
-                                // 画像リストを更新
+                                // 新しい状態を一度に設定
+                                currentZipUri = Uri.fromFile(file)
+                                currentZipFile = file
                                 imageFiles = extractedImages
-
-                                // Update file navigation info
                                 fileNavigationInfo = fileNavigationManager.getNavigationInfo(file)
                                 currentView = ViewState.ImageViewer
 
                                 println("DEBUG: Successfully loaded ${file.name} with ${extractedImages.size} images")
+                            } else {
+                                println("DEBUG: No images found in ${file.name}")
+                                // 画像が見つからない場合は元の状態を保持
                             }
                         } catch (e: Exception) {
                             println("DEBUG: Error loading file ${file.name}: ${e.message}")
+                            e.printStackTrace()
                         } finally {
                             isLoading = false
                             isNavigatingToNewFile = false
@@ -336,10 +360,10 @@ fun MainScreen() {
                 onBackToFiles = {
                     // ジョブをキャンセル
                     currentLoadingJob?.cancel()
-                    
-                    // メモリクリア
-                    clearMemoryAndFiles()
-                    
+
+                    // 完全な状態とメモリクリア
+                    clearAllStateAndMemory()
+
                     currentView = ViewState.LocalFileList
                 },
                 onNavigateToPreviousFile = {
