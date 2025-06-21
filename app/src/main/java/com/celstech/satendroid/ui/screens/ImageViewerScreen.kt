@@ -296,48 +296,7 @@ fun ImageViewerScreen(
 
 
 
-        // No previous/next file indicators
-        if (!showPageSlider && fileNavigationInfo != null) {
-            // No previous file indicator (when at first image and no previous file)
-            if (pagerState.currentPage == 0 && !fileNavigationInfo.hasPreviousFile) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.CenterStart)
-                        .padding(16.dp)
-                        .background(
-                            Color.Gray.copy(alpha = 0.5f),
-                            RoundedCornerShape(8.dp)
-                        )
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                ) {
-                    Text(
-                        text = "最初のファイル",
-                        color = Color.White.copy(alpha = 0.7f),
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
-            
-            // No next file indicator (when at last image and no next file)
-            if (pagerState.currentPage == imageFiles.size - 1 && !fileNavigationInfo.hasNextFile) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .padding(16.dp)
-                        .background(
-                            Color.Gray.copy(alpha = 0.5f),
-                            RoundedCornerShape(8.dp)
-                        )
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                ) {
-                    Text(
-                        text = "最後のファイル",
-                        color = Color.White.copy(alpha = 0.7f),
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
-        }
+
 
         // Full screen clickable overlay when slider is shown (to hide slider and jump to page)
         if (showPageSlider) {
