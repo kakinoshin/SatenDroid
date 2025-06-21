@@ -43,19 +43,25 @@ fun MainScreen() {
     var showTopBar by remember { mutableStateOf(false) }
     var currentZipUri by remember { mutableStateOf<Uri?>(null) }
     var currentZipFile by remember { mutableStateOf<File?>(null) }
-    
+
     // State for file navigation
     var fileNavigationInfo by remember { mutableStateOf<FileNavigationManager.NavigationInfo?>(null) }
-    
+
     // フラグ：ファイル移動中かどうかを追跡
     var isNavigatingToNewFile by remember { mutableStateOf(false) }
-    
+
     // State for directory navigation - ファイル選択画面の現在のパスを保持
     var savedDirectoryPath by remember { mutableStateOf("") }
 
+    // 読書状態更新のための状態（non-nullファイルのみ）
+    var lastReadingProgress by remember { mutableStateOf<Pair<File, Int>?>(null) }
+
+    // ファイルナビゲーション時の読書状態更新用
+    var fileCompletionUpdate by remember { mutableStateOf<File?>(null) }
+
     // Zip image handler
     val zipImageHandler = remember { ZipImageHandler(context) }
-    
+
     // File navigation manager
     val fileNavigationManager = remember { FileNavigationManager(context) }
 
@@ -72,7 +78,7 @@ fun MainScreen() {
             println("DEBUG: ZIP file picked from device")
             isNavigatingToNewFile = true
             isLoading = true
-            
+
             // Clear previous extracted files if any
             if (imageFiles.isNotEmpty()) {
                 zipImageHandler.clearExtractedFiles(context, imageFiles)
@@ -83,14 +89,14 @@ fun MainScreen() {
                 try {
                     // まず状態をクリア
                     imageFiles = emptyList()
-                    
+
                     // 新しいファイル情報を設定
                     currentZipUri = uri
                     currentZipFile = null
-                    
+
                     // 画像を抽出
                     val extractedImages = zipImageHandler.extractImagesFromZip(uri)
-                    
+
                     if (extractedImages.isNotEmpty()) {
                         imageFiles = extractedImages
                         currentView = ViewState.ImageViewer
@@ -125,51 +131,51 @@ fun MainScreen() {
     // Function to navigate to a new ZIP file
     fun navigateToZipFile(newZipFile: File) {
         println("DEBUG: Navigating to new file: ${newZipFile.name}")
-        
+
         // ファイル移動中フラグを設定
         isNavigatingToNewFile = true
-        
+
         // Clear current images
         if (imageFiles.isNotEmpty()) {
             println("DEBUG: Clearing ${imageFiles.size} existing images")
             zipImageHandler.clearExtractedFiles(context, imageFiles)
         }
-        
+
         isLoading = true
-        
+
         coroutineScope.launch {
             try {
                 // まず状態をクリア
                 println("DEBUG: Clearing imageFiles state")
                 imageFiles = emptyList()
-                
+
                 // PagerStateを即座にリセット（アニメーションなし）
                 println("DEBUG: Resetting pager to page 0")
                 pagerState.scrollToPage(0)
-                
+
                 // 新しいファイル情報を設定
                 println("DEBUG: Setting new file info")
                 currentZipUri = Uri.fromFile(newZipFile)
                 currentZipFile = newZipFile
-                
+
                 // 画像を抽出
                 println("DEBUG: Extracting images from ${newZipFile.name}")
                 val extractedImages = zipImageHandler.extractImagesFromZip(Uri.fromFile(newZipFile))
                 println("DEBUG: Extracted ${extractedImages.size} images from ${newZipFile.name}")
-                
+
                 if (extractedImages.isNotEmpty()) {
                     // ファイルナビゲーション情報を更新
                     println("DEBUG: Updating file navigation info")
                     fileNavigationInfo = fileNavigationManager.getNavigationInfo(newZipFile)
-                    
+
                     // 画像リストを最後に更新（これによりUI更新がトリガーされる）
                     println("DEBUG: Setting imageFiles to ${extractedImages.size} images")
                     imageFiles = extractedImages
-                    
+
                     // 確実に最初のページを表示
                     println("DEBUG: Final scroll to page 0")
                     pagerState.scrollToPage(0)
-                    
+
                     println("DEBUG: Successfully navigated to ${newZipFile.name}, showing page 0 of ${extractedImages.size}")
                 } else {
                     println("DEBUG: No images found in ${newZipFile.name}")
@@ -189,7 +195,11 @@ fun MainScreen() {
     // 現在の位置を保存
     LaunchedEffect(pagerState.currentPage, currentZipUri) {
         if (currentZipUri != null && imageFiles.isNotEmpty()) {
-            zipImageHandler.saveCurrentPosition(currentZipUri!!, pagerState.currentPage, currentZipFile)
+            zipImageHandler.saveCurrentPosition(
+                currentZipUri!!,
+                pagerState.currentPage,
+                currentZipFile
+            )
         }
     }
 
@@ -217,7 +227,7 @@ fun MainScreen() {
                     println("DEBUG: File selected: ${file.name}")
                     isNavigatingToNewFile = true
                     isLoading = true
-                    
+
                     // Clear previous extracted files if any
                     if (imageFiles.isNotEmpty()) {
                         zipImageHandler.clearExtractedFiles(context, imageFiles)
@@ -227,22 +237,23 @@ fun MainScreen() {
                         try {
                             // まず状態をクリア
                             imageFiles = emptyList()
-                            
+
                             // 新しいファイル情報を設定
                             currentZipUri = Uri.fromFile(file)
                             currentZipFile = file
-                            
+
                             // 画像を抽出
-                            val extractedImages = zipImageHandler.extractImagesFromZip(Uri.fromFile(file))
-                            
+                            val extractedImages =
+                                zipImageHandler.extractImagesFromZip(Uri.fromFile(file))
+
                             if (extractedImages.isNotEmpty()) {
                                 // 画像リストを更新
                                 imageFiles = extractedImages
-                                
+
                                 // Update file navigation info
                                 fileNavigationInfo = fileNavigationManager.getNavigationInfo(file)
                                 currentView = ViewState.ImageViewer
-                                
+
                                 println("DEBUG: Successfully loaded ${file.name} with ${extractedImages.size} images")
                             }
                         } catch (e: Exception) {
@@ -270,7 +281,21 @@ fun MainScreen() {
                 onOpenSettings = {
                     currentView = ViewState.Settings
                 },
-                isLoading = isLoading
+                isLoading = isLoading,
+                onReturnFromViewer = if (lastReadingProgress != null) {
+                    {
+                        println("DEBUG: Returned from image viewer - reading status will be updated")
+                        // readingStatusUpdateとして渡された後、lastReadingProgressをクリア
+                    }
+                } else null,
+                readingStatusUpdate = lastReadingProgress?.also {
+                    // 読書状態更新データが使用されたらクリア
+                    lastReadingProgress = null
+                },
+                fileCompletionUpdate = fileCompletionUpdate?.also {
+                    // 既読マークデータが使用されたらクリア
+                    fileCompletionUpdate = null
+                }
             )
         }
 
@@ -291,6 +316,13 @@ fun MainScreen() {
                 },
                 onNavigateToPreviousFile = {
                     println("DEBUG: Previous file button clicked")
+
+                    // 現在のファイルの読書状態を保存（現在のページで）
+                    currentZipFile?.let { currentFile ->
+                        lastReadingProgress = Pair(currentFile, pagerState.currentPage)
+                        println("DEBUG: Saving current progress before moving to previous file: page ${pagerState.currentPage + 1}")
+                    }
+
                     fileNavigationInfo?.previousFile?.let { previousFile ->
                         println("DEBUG: Navigating to previous file: ${previousFile.name}")
                         navigateToZipFile(previousFile)
@@ -298,13 +330,31 @@ fun MainScreen() {
                 },
                 onNavigateToNextFile = {
                     println("DEBUG: Next file button clicked")
+
+                    // 現在のファイルを既読にマーク（最後まで読んだとして扱う）
+                    currentZipFile?.let { currentFile ->
+                        fileCompletionUpdate = currentFile
+                        println("DEBUG: Marking current file as completed before moving to next file: ${currentFile.name}")
+                    }
+
                     fileNavigationInfo?.nextFile?.let { nextFile ->
                         println("DEBUG: Navigating to next file: ${nextFile.name}")
                         navigateToZipFile(nextFile)
                     } ?: println("DEBUG: No next file available")
                 },
                 fileNavigationInfo = fileNavigationInfo,
-                cacheManager = zipImageHandler.getCacheManager()
+                cacheManager = zipImageHandler.getCacheManager(),
+                onPageChanged = { currentPage, totalPages, zipFile ->
+                    // 読書進捗を保存
+                    lastReadingProgress = Pair(zipFile, currentPage)
+                    println("DEBUG: Reading progress updated - Page: ${currentPage + 1}/$totalPages, File: ${zipFile.name}")
+
+                    // 最後のページに到達した場合は自動的に既読にマーク
+                    if (currentPage >= totalPages - 1) {
+                        println("DEBUG: Reached last page, marking as completed automatically")
+                        fileCompletionUpdate = zipFile
+                    }
+                }
             )
         }
 

@@ -66,7 +66,14 @@ class LocalItemFactory(private val context: Context) {
     ): LocalItem.ZipFile = withContext(Dispatchers.IO) {
         // 順次実行（並行処理を避けてエラーを回避）
         val thumbnail = ThumbnailGenerator.generateThumbnail(file)
-        val readingProgress = readingStatusManager.getReadingProgress(file.absolutePath)
+        
+        // デバッグ: 読書状態取得に使用するパスを確認
+        val filePathForReading = file.absolutePath
+        println("DEBUG: Reading status path for '${file.name}': $filePathForReading")
+        
+        val readingProgress = readingStatusManager.getReadingProgress(filePathForReading)
+        println("DEBUG: Reading status for '${file.name}': ${readingProgress.status}")
+        
         val imageCount = getImageCountInZip(file)
         
         LocalItem.ZipFile(
@@ -112,18 +119,24 @@ class LocalItemFactory(private val context: Context) {
         totalCount: Int? = null
     ): LocalItem.ZipFile {
         val actualTotalCount = totalCount ?: zipFile.totalImageCount
+        val filePathForReading = zipFile.file.absolutePath
+        
+        println("DEBUG: Updating reading status - File: ${zipFile.name}, Path: $filePathForReading, Index: $currentIndex, Total: $actualTotalCount")
         
         val newStatus = when {
-            currentIndex >= actualTotalCount - 1 -> {
-                readingStatusManager.markAsCompleted(zipFile.file.absolutePath, actualTotalCount)
+            // 最後の画像まで見た場合は「既読」
+            currentIndex >= actualTotalCount - 1 && actualTotalCount > 0 -> {
+                readingStatusManager.markAsCompleted(filePathForReading, actualTotalCount)
                 com.celstech.satendroid.ui.models.ReadingStatus.COMPLETED
             }
-            currentIndex > 0 -> {
-                readingStatusManager.markAsReading(zipFile.file.absolutePath, currentIndex, actualTotalCount)
+            // 1枚でも画像を見た場合、または明示的に読書開始した場合は「読書中」
+            currentIndex >= 0 && actualTotalCount > 0 -> {
+                readingStatusManager.markAsReading(filePathForReading, currentIndex, actualTotalCount)
                 com.celstech.satendroid.ui.models.ReadingStatus.READING
             }
+            // その他の場合は「未読」
             else -> {
-                readingStatusManager.markAsUnread(zipFile.file.absolutePath)
+                readingStatusManager.markAsUnread(filePathForReading)
                 com.celstech.satendroid.ui.models.ReadingStatus.UNREAD
             }
         }

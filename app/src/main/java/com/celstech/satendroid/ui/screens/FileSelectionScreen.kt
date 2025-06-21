@@ -49,7 +49,10 @@ fun FileSelectionScreen(
     onOpenFromDevice: () -> Unit,
     onOpenFromDropbox: () -> Unit,
     onOpenSettings: () -> Unit,
-    isLoading: Boolean
+    isLoading: Boolean,
+    onReturnFromViewer: (() -> Unit)? = null,
+    readingStatusUpdate: Pair<File, Int>? = null,
+    fileCompletionUpdate: File? = null
 ) {
     val context = LocalContext.current
     val viewModel: LocalFileViewModel = viewModel(
@@ -61,7 +64,56 @@ fun FileSelectionScreen(
     LaunchedEffect(Unit) {
         viewModel.scanDirectory(initialPath)
     }
-    
+
+    // 画像ビューアーから戻ってきたときの処理
+    LaunchedEffect(onReturnFromViewer) {
+        onReturnFromViewer?.let {
+            viewModel.onReturnFromImageViewer()
+            it() // コールバックを実行
+        }
+    }
+
+    // 読書状態の更新処理
+    LaunchedEffect(readingStatusUpdate) {
+        readingStatusUpdate?.let { (file, currentPage) ->
+            println("DEBUG: Updating reading status for ${file.name} at page ${currentPage + 1}")
+            // ファイルパスからLocalItem.ZipFileを検索
+            val zipFileItem = uiState.localItems.find { item ->
+                item is LocalItem.ZipFile && item.file.absolutePath == file.absolutePath
+            } as? LocalItem.ZipFile
+
+            if (zipFileItem != null) {
+                // 画像の総数を取得（ファイルから新たに取得）
+                val totalImages = zipFileItem.totalImageCount
+                viewModel.updateReadingStatus(zipFileItem, currentPage, totalImages)
+                println("DEBUG: Reading status updated successfully")
+            } else {
+                println("DEBUG: Could not find LocalItem.ZipFile for ${file.name}")
+            }
+        }
+    }
+
+    // ファイル完了マーク処理（次のファイルに移動時に既読にマーク）
+    LaunchedEffect(fileCompletionUpdate) {
+        fileCompletionUpdate?.let { file ->
+            println("DEBUG: Marking file as completed: ${file.name}")
+            // ファイルパスからLocalItem.ZipFileを検索
+            val zipFileItem = uiState.localItems.find { item ->
+                item is LocalItem.ZipFile && item.file.absolutePath == file.absolutePath
+            } as? LocalItem.ZipFile
+
+            if (zipFileItem != null) {
+                // 最後のページまで読んだとして既読にマーク
+                val lastPage =
+                    if (zipFileItem.totalImageCount > 0) zipFileItem.totalImageCount - 1 else 0
+                viewModel.updateReadingStatus(zipFileItem, lastPage, zipFileItem.totalImageCount)
+                println("DEBUG: File marked as completed successfully")
+            } else {
+                println("DEBUG: Could not find LocalItem.ZipFile for completion marking: ${file.name}")
+            }
+        }
+    }
+
     // ディレクトリパスが変更されたときに通知
     LaunchedEffect(uiState.currentPath) {
         onDirectoryChanged(uiState.currentPath)
@@ -85,14 +137,14 @@ fun FileSelectionScreen(
                     style = MaterialTheme.typography.headlineLarge,
                     color = MaterialTheme.colorScheme.onBackground
                 )
-                
+
                 Text(
                     text = "ZIP Image Viewer",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
                 )
             }
-            
+
             TextButton(
                 onClick = onOpenSettings,
                 enabled = !isLoading
@@ -100,7 +152,7 @@ fun FileSelectionScreen(
                 Text("⚙️ 設定")
             }
         }
-        
+
         Spacer(modifier = Modifier.height(16.dp))
 
         // Action buttons
@@ -298,7 +350,11 @@ fun FileSelectionScreen(
                                 } else {
                                     when (item) {
                                         is LocalItem.Folder -> viewModel.navigateToFolder(item.path)
-                                        is LocalItem.ZipFile -> onFileSelected(item.file)
+                                        is LocalItem.ZipFile -> {
+                                            // ZIPファイルを開く前に読書状態を更新
+                                            viewModel.onZipFileOpened(item)
+                                            onFileSelected(item.file)
+                                        }
                                     }
                                 }
                             },

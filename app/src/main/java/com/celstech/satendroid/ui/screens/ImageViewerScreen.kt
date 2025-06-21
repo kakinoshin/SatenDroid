@@ -78,62 +78,65 @@ fun ImageViewerScreen(
     onNavigateToPreviousFile: (() -> Unit)? = null,
     onNavigateToNextFile: (() -> Unit)? = null,
     fileNavigationInfo: FileNavigationManager.NavigationInfo? = null,
-    cacheManager: com.celstech.satendroid.cache.ImageCacheManager
+    cacheManager: com.celstech.satendroid.cache.ImageCacheManager,
+    onPageChanged: ((currentPage: Int, totalPages: Int, zipFile: File) -> Unit)? = null
 ) {
     val coroutineScope = rememberCoroutineScope()
     val reverseSwipeDirection by cacheManager.reverseSwipeDirection.collectAsState()
     val context = LocalContext.current
-    
+
     // State for page jump slider
     var showPageSlider by remember { mutableStateOf(false) }
     var sliderValue by remember { mutableFloatStateOf(0f) }
-    
+
     // System UI visibility control with Fire OS compatibility
     fun setSystemUIVisibility(visible: Boolean) {
         val activity = context as? Activity ?: return
         val window = activity.window
-        
+
         try {
             if (visible) {
                 // Show status bar and navigation bar
                 // 新しいAPI
-                val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
+                val windowInsetsController =
+                    WindowCompat.getInsetsController(window, window.decorView)
                 windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
-                
+
                 // 古いAPI（互換性のため）
                 @Suppress("DEPRECATION")
                 window.decorView.systemUiVisibility = (
-                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                    or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                    or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                )
-                
+                        View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                        )
+
                 // Fire OS特有の対応
                 window.statusBarColor = android.graphics.Color.BLACK
                 window.navigationBarColor = android.graphics.Color.BLACK
             } else {
                 // Hide status bar and navigation bar
                 // 新しいAPI
-                val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
+                val windowInsetsController =
+                    WindowCompat.getInsetsController(window, window.decorView)
                 windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
-                windowInsetsController.systemBarsBehavior = 
+                windowInsetsController.systemBarsBehavior =
                     WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                
+
                 // 古いAPI（Fire OS互換性のため）
                 @Suppress("DEPRECATION")
                 window.decorView.systemUiVisibility = (
-                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                    or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                    or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                    or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                    or View.SYSTEM_UI_FLAG_FULLSCREEN
-                    or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                )
-                
+                        View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                or View.SYSTEM_UI_FLAG_FULLSCREEN
+                                or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                        )
+
                 // Fire OS特有の対応 - ステータスバーとナビゲーションバーを透明に
                 window.statusBarColor = android.graphics.Color.TRANSPARENT
                 window.navigationBarColor = android.graphics.Color.TRANSPARENT
-                
+
                 // フルスクリーンフラグを明示的に設定
                 @Suppress("DEPRECATION")
                 window.addFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN)
@@ -142,7 +145,7 @@ fun ImageViewerScreen(
         } catch (e: Exception) {
             // Fire OSで例外が発生した場合のフォールバック
             android.util.Log.w("ImageViewer", "Failed to set system UI visibility: ${e.message}")
-            
+
             // 最低限の古いAPIでの対応
             @Suppress("DEPRECATION")
             if (visible) {
@@ -150,39 +153,46 @@ fun ImageViewerScreen(
                 window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN)
             } else {
                 window.decorView.systemUiVisibility = (
-                    View.SYSTEM_UI_FLAG_FULLSCREEN
-                    or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                    or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                )
+                        View.SYSTEM_UI_FLAG_FULLSCREEN
+                                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                        )
                 window.addFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN)
             }
         }
     }
-    
+
     // Control system UI visibility based on showTopBar state
     LaunchedEffect(showTopBar) {
         setSystemUIVisibility(showTopBar)
     }
-    
+
     // Hide system UI when component is first displayed
     LaunchedEffect(Unit) {
         setSystemUIVisibility(false)
     }
-    
+
     // Restore system UI when leaving the screen
     DisposableEffect(Unit) {
         onDispose {
             setSystemUIVisibility(true)
         }
     }
-    
+
     // Update slider value when page changes (only when slider is not shown)
     LaunchedEffect(pagerState.currentPage) {
         if (!showPageSlider) {
             sliderValue = pagerState.currentPage.toFloat()
         }
     }
-    
+
+    // 読書状態の更新: ページが変更されたときに通知
+    LaunchedEffect(pagerState.currentPage, imageFiles.size, currentZipFile) {
+        if (imageFiles.isNotEmpty() && currentZipFile != null) {
+            onPageChanged?.invoke(pagerState.currentPage, imageFiles.size, currentZipFile)
+        }
+    }
+
     // Initialize slider value when slider is first shown
     LaunchedEffect(showPageSlider) {
         if (showPageSlider) {
@@ -295,9 +305,6 @@ fun ImageViewerScreen(
         }
 
 
-
-
-
         // Full screen clickable overlay when slider is shown (to hide slider and jump to page)
         if (showPageSlider) {
             Box(
@@ -384,7 +391,7 @@ fun ImageViewerScreen(
                     if (imageFiles.isNotEmpty()) {
                         val targetIndex = sliderValue.roundToInt().coerceIn(0, imageFiles.size - 1)
                         val targetFile = imageFiles[targetIndex]
-                        
+
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
@@ -399,7 +406,7 @@ fun ImageViewerScreen(
                                     .clip(RoundedCornerShape(8.dp)),
                                 contentScale = ContentScale.Crop
                             )
-                            
+
                             // File info
                             Column(
                                 modifier = Modifier.weight(1f)
@@ -418,10 +425,10 @@ fun ImageViewerScreen(
                                 )
                             }
                         }
-                        
+
                         Spacer(modifier = Modifier.height(16.dp))
                     }
-                    
+
                     // Slider
                     Slider(
                         value = sliderValue,
@@ -437,9 +444,9 @@ fun ImageViewerScreen(
                         ),
                         modifier = Modifier.fillMaxWidth()
                     )
-                    
+
                     Spacer(modifier = Modifier.height(8.dp))
-                    
+
                     Text(
                         text = "スライダー以外の場所をタップして選択したページにジャンプ",
                         color = Color.White.copy(alpha = 0.6f),

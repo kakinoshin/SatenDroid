@@ -193,10 +193,14 @@ class LocalFileRepository(private val context: Context) {
             "$path/${child.name}"
         
         // LocalItemFactoryを使用してサムネイル等を含むZipFileアイテムを作成
-        return localItemFactory.createZipFileItem(
+        val zipFileItem = localItemFactory.createZipFileItem(
             file = child,
             relativePath = relativePath
         )
+        
+        println("DEBUG: Created ZipFile item - Name: ${zipFileItem.name}, Status: ${zipFileItem.readingStatus}, Index: ${zipFileItem.currentImageIndex}/${zipFileItem.totalImageCount}")
+        
+        return zipFileItem
     }
 
     /**

@@ -221,7 +221,7 @@ class LocalFileViewModel(
                 // UIStateのlocalItemsを更新
                 val currentItems = _uiState.value.localItems
                 val updatedItems = currentItems.map { item ->
-                    if (item is LocalItem.ZipFile && item.path == zipFile.path) {
+                    if (item is LocalItem.ZipFile && item.file.absolutePath == zipFile.file.absolutePath) {
                         updatedZipFile
                     } else {
                         item
@@ -229,6 +229,8 @@ class LocalFileViewModel(
                 }
                 
                 _uiState.value = _uiState.value.copy(localItems = updatedItems)
+                
+                println("DEBUG: Reading status update completed - Status: ${updatedZipFile.readingStatus}, Index: ${updatedZipFile.currentImageIndex}/${updatedZipFile.totalImageCount}")
                 
             } catch (e: Exception) {
                 println("DEBUG: Failed to update reading status: ${e.message}")
@@ -247,6 +249,90 @@ class LocalFileViewModel(
 
     fun markAsUnread(zipFile: LocalItem.ZipFile) {
         updateReadingStatus(zipFile, 0, zipFile.totalImageCount)
+    }
+
+    // テスト用: 読書状態を強制的に更新
+    fun testUpdateReadingStatus(zipFile: LocalItem.ZipFile, status: com.celstech.satendroid.ui.models.ReadingStatus) {
+        viewModelScope.launch {
+            try {
+                println("DEBUG: Test updating reading status - File: ${zipFile.name}, Status: $status")
+                
+                val updatedZipFile = when (status) {
+                    com.celstech.satendroid.ui.models.ReadingStatus.UNREAD -> {
+                        repository.updateReadingStatus(zipFile, 0, zipFile.totalImageCount)
+                    }
+                    com.celstech.satendroid.ui.models.ReadingStatus.READING -> {
+                        val middleIndex = if (zipFile.totalImageCount > 0) zipFile.totalImageCount / 2 else 0
+                        repository.updateReadingStatus(zipFile, middleIndex, zipFile.totalImageCount)
+                    }
+                    com.celstech.satendroid.ui.models.ReadingStatus.COMPLETED -> {
+                        val lastIndex = if (zipFile.totalImageCount > 0) zipFile.totalImageCount - 1 else 0
+                        repository.updateReadingStatus(zipFile, lastIndex, zipFile.totalImageCount)
+                    }
+                }
+                
+                // UIStateのlocalItemsを更新
+                val currentItems = _uiState.value.localItems
+                val updatedItems = currentItems.map { item ->
+                    if (item is LocalItem.ZipFile && item.file.absolutePath == zipFile.file.absolutePath) {
+                        updatedZipFile
+                    } else {
+                        item
+                    }
+                }
+                
+                _uiState.value = _uiState.value.copy(localItems = updatedItems)
+                
+                println("DEBUG: Reading status update completed - Status: ${updatedZipFile.readingStatus}, Index: ${updatedZipFile.currentImageIndex}/${updatedZipFile.totalImageCount}")
+                
+                println("DEBUG: Test reading status update completed successfully")
+                
+            } catch (e: Exception) {
+                println("DEBUG: Failed to test update reading status: ${e.message}")
+                e.printStackTrace()
+            }
+        }
+    }
+
+    // デバッグ用: 現在のディレクトリを再スキャン
+    fun refreshCurrentDirectory() {
+        scanDirectory(_uiState.value.currentPath)
+    }
+
+    // ZIPファイルを開いたときに呼び出す（読書状態を自動更新）
+    fun onZipFileOpened(zipFile: LocalItem.ZipFile) {
+        viewModelScope.launch {
+            try {
+                println("DEBUG: onZipFileOpened called for ${zipFile.name}")
+                // ファイルを開いた時点で「読書中」に設定（まだ何も見ていなくても）
+                // 少なくとも1ページ目を見たとして扱う
+                val updatedZipFile = repository.updateReadingStatus(zipFile, 0, zipFile.totalImageCount)
+                
+                // UIStateを更新
+                val currentItems = _uiState.value.localItems
+                val updatedItems = currentItems.map { item ->
+                    if (item is LocalItem.ZipFile && item.file.absolutePath == zipFile.file.absolutePath) {
+                        updatedZipFile
+                    } else {
+                        item
+                    }
+                }
+                
+                _uiState.value = _uiState.value.copy(localItems = updatedItems)
+                
+                println("DEBUG: ZipFile opened - reading status updated to ${updatedZipFile.readingStatus}")
+                
+            } catch (e: Exception) {
+                println("DEBUG: Failed to update reading status on file open: ${e.message}")
+                e.printStackTrace()
+            }
+        }
+    }
+
+    // 画像ビューアーから戻ってきたときに呼び出す（読書状態を再取得）
+    fun onReturnFromImageViewer() {
+        refreshCurrentDirectory()
+        println("DEBUG: Returned from image viewer - refreshing directory to get latest reading status")
     }
 
     companion object {

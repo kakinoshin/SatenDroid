@@ -2,6 +2,7 @@ package com.celstech.satendroid.utils
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.core.content.edit
 import com.celstech.satendroid.ui.models.ReadingStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -23,6 +24,16 @@ class ReadingStatusManager(context: Context) {
     }
     
     /**
+     * ファイルパスを正規化して一貫したキーを生成
+     */
+    private fun normalizeFilePath(filePath: String): String {
+        return filePath
+            .replace("\\", "/")  // バックスラッシュをスラッシュに統一
+            .replace("//+".toRegex(), "/")  // 連続スラッシュを単一に
+            .removeSuffix("/")  // 末尾のスラッシュを除去
+    }
+    
+    /**
      * ファイルの読書状況を保存
      */
     suspend fun saveReadingStatus(
@@ -31,21 +42,28 @@ class ReadingStatusManager(context: Context) {
         currentIndex: Int = 0,
         totalCount: Int = 0
     ) = withContext(Dispatchers.IO) {
-        prefs.edit().apply {
-            putString(STATUS_PREFIX + filePath, status.name)
-            putInt(CURRENT_INDEX_PREFIX + filePath, currentIndex)
-            putInt(TOTAL_COUNT_PREFIX + filePath, totalCount)
-        }.apply()
+        val normalizedPath = normalizeFilePath(filePath)
+        println("DEBUG: Saving reading status - Original Path: $filePath")
+        println("DEBUG: Saving reading status - Normalized Path: $normalizedPath, Status: $status, Index: $currentIndex")
+        prefs.edit {
+            putString(STATUS_PREFIX + normalizedPath, status.name)
+            putInt(CURRENT_INDEX_PREFIX + normalizedPath, currentIndex)
+            putInt(TOTAL_COUNT_PREFIX + normalizedPath, totalCount)
+        }
+        println("DEBUG: Reading status saved successfully")
     }
     
     /**
      * ファイルの読書状況を取得
      */
     suspend fun getReadingStatus(filePath: String): ReadingStatus = withContext(Dispatchers.IO) {
-        val statusString = prefs.getString(STATUS_PREFIX + filePath, ReadingStatus.UNREAD.name)
+        val normalizedPath = normalizeFilePath(filePath)
+        val statusString = prefs.getString(STATUS_PREFIX + normalizedPath, ReadingStatus.UNREAD.name)
+        println("DEBUG: Getting reading status - Original Path: $filePath")
+        println("DEBUG: Getting reading status - Normalized Path: $normalizedPath, Found: $statusString")
         try {
             ReadingStatus.valueOf(statusString ?: ReadingStatus.UNREAD.name)
-        } catch (e: IllegalArgumentException) {
+        } catch (_: IllegalArgumentException) {
             ReadingStatus.UNREAD
         }
     }
@@ -54,14 +72,16 @@ class ReadingStatusManager(context: Context) {
      * ファイルの現在の画像インデックスを取得
      */
     suspend fun getCurrentImageIndex(filePath: String): Int = withContext(Dispatchers.IO) {
-        prefs.getInt(CURRENT_INDEX_PREFIX + filePath, 0)
+        val normalizedPath = normalizeFilePath(filePath)
+        prefs.getInt(CURRENT_INDEX_PREFIX + normalizedPath, 0)
     }
     
     /**
      * ファイルの総画像数を取得
      */
     suspend fun getTotalImageCount(filePath: String): Int = withContext(Dispatchers.IO) {
-        prefs.getInt(TOTAL_COUNT_PREFIX + filePath, 0)
+        val normalizedPath = normalizeFilePath(filePath)
+        prefs.getInt(TOTAL_COUNT_PREFIX + normalizedPath, 0)
     }
     
     /**
@@ -100,18 +120,21 @@ class ReadingStatusManager(context: Context) {
      * 読書状況をクリア（ファイル削除時などに使用）
      */
     suspend fun clearReadingStatus(filePath: String) = withContext(Dispatchers.IO) {
-        prefs.edit().apply {
-            remove(STATUS_PREFIX + filePath)
-            remove(CURRENT_INDEX_PREFIX + filePath)
-            remove(TOTAL_COUNT_PREFIX + filePath)
-        }.apply()
+        val normalizedPath = normalizeFilePath(filePath)
+        println("DEBUG: Clearing reading status - Original Path: $filePath")
+        println("DEBUG: Clearing reading status - Normalized Path: $normalizedPath")
+        prefs.edit {
+            remove(STATUS_PREFIX + normalizedPath)
+            remove(CURRENT_INDEX_PREFIX + normalizedPath)
+            remove(TOTAL_COUNT_PREFIX + normalizedPath)
+        }
     }
     
     /**
      * 全ての読書状況をクリア
      */
     suspend fun clearAllReadingStatus() = withContext(Dispatchers.IO) {
-        prefs.edit().clear().apply()
+        prefs.edit { clear() }
     }
 }
 
