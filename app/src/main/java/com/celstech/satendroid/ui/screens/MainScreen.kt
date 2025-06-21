@@ -23,6 +23,7 @@ import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 import java.io.File
 
 /**
@@ -50,6 +51,9 @@ fun MainScreen() {
     // フラグ：ファイル移動中かどうかを追跡
     var isNavigatingToNewFile by remember { mutableStateOf(false) }
 
+    // コルーチンジョブの管理（メモリリーク防止）
+    var currentLoadingJob by remember { mutableStateOf<Job?>(null) }
+
     // State for directory navigation - ファイル選択画面の現在のパスを保持
     var savedDirectoryPath by remember { mutableStateOf("") }
 
@@ -65,6 +69,27 @@ fun MainScreen() {
     // File navigation manager
     val fileNavigationManager = remember { FileNavigationManager(context) }
 
+    // メモリ確実クリア関数
+    fun clearMemoryAndFiles() {
+        println("DEBUG: Starting comprehensive memory cleanup")
+        
+        // ファイルを削除
+        if (imageFiles.isNotEmpty()) {
+            zipImageHandler.clearExtractedFiles(context, imageFiles)
+        }
+        
+        // 状態をクリア
+        imageFiles = emptyList()
+        currentZipUri = null
+        currentZipFile = null
+        fileNavigationInfo = null
+        
+        // ガベージコレクションを強制実行
+        System.gc()
+        
+        println("DEBUG: Memory cleanup completed")
+    }
+
     // Permission state for external storage
     val storagePermissionState = rememberPermissionState(
         android.Manifest.permission.READ_EXTERNAL_STORAGE
@@ -76,20 +101,19 @@ fun MainScreen() {
     ) { uri: Uri? ->
         uri?.let {
             println("DEBUG: ZIP file picked from device")
+            
+            // 既存のジョブをキャンセル
+            currentLoadingJob?.cancel()
+            
             isNavigatingToNewFile = true
             isLoading = true
 
-            // Clear previous extracted files if any
-            if (imageFiles.isNotEmpty()) {
-                zipImageHandler.clearExtractedFiles(context, imageFiles)
-            }
+            // メモリクリア
+            clearMemoryAndFiles()
 
             // Extract images from ZIP
-            coroutineScope.launch {
+            currentLoadingJob = coroutineScope.launch {
                 try {
-                    // まず状態をクリア
-                    imageFiles = emptyList()
-
                     // 新しいファイル情報を設定
                     currentZipUri = uri
                     currentZipFile = null
@@ -132,23 +156,19 @@ fun MainScreen() {
     fun navigateToZipFile(newZipFile: File) {
         println("DEBUG: Navigating to new file: ${newZipFile.name}")
 
+        // 既存のジョブをキャンセル
+        currentLoadingJob?.cancel()
+
         // ファイル移動中フラグを設定
         isNavigatingToNewFile = true
 
-        // Clear current images
-        if (imageFiles.isNotEmpty()) {
-            println("DEBUG: Clearing ${imageFiles.size} existing images")
-            zipImageHandler.clearExtractedFiles(context, imageFiles)
-        }
+        // メモリクリア
+        clearMemoryAndFiles()
 
         isLoading = true
 
-        coroutineScope.launch {
+        currentLoadingJob = coroutineScope.launch {
             try {
-                // まず状態をクリア
-                println("DEBUG: Clearing imageFiles state")
-                imageFiles = emptyList()
-
                 // PagerStateを即座にリセット（アニメーションなし）
                 println("DEBUG: Resetting pager to page 0")
                 pagerState.scrollToPage(0)
@@ -214,7 +234,15 @@ fun MainScreen() {
     // Cleanup extracted files when component is disposed
     DisposableEffect(Unit) {
         onDispose {
-            zipImageHandler.clearExtractedFiles(context, imageFiles)
+            println("DEBUG: MainScreen disposing - cleaning up all resources")
+            
+            // ジョブをキャンセル
+            currentLoadingJob?.cancel()
+            
+            // メモリクリア
+            clearMemoryAndFiles()
+            
+            println("DEBUG: MainScreen cleanup completed")
         }
     }
 
@@ -225,19 +253,18 @@ fun MainScreen() {
                 initialPath = savedDirectoryPath,
                 onFileSelected = { file ->
                     println("DEBUG: File selected: ${file.name}")
+                    
+                    // 既存のジョブをキャンセル
+                    currentLoadingJob?.cancel()
+                    
                     isNavigatingToNewFile = true
                     isLoading = true
 
-                    // Clear previous extracted files if any
-                    if (imageFiles.isNotEmpty()) {
-                        zipImageHandler.clearExtractedFiles(context, imageFiles)
-                    }
+                    // メモリクリア
+                    clearMemoryAndFiles()
 
-                    coroutineScope.launch {
+                    currentLoadingJob = coroutineScope.launch {
                         try {
-                            // まず状態をクリア
-                            imageFiles = emptyList()
-
                             // 新しいファイル情報を設定
                             currentZipUri = Uri.fromFile(file)
                             currentZipFile = file
@@ -307,11 +334,12 @@ fun MainScreen() {
                 showTopBar = showTopBar,
                 onToggleTopBar = { showTopBar = !showTopBar },
                 onBackToFiles = {
-                    zipImageHandler.clearExtractedFiles(context, imageFiles)
-                    imageFiles = emptyList()
-                    currentZipUri = null
-                    currentZipFile = null
-                    fileNavigationInfo = null
+                    // ジョブをキャンセル
+                    currentLoadingJob?.cancel()
+                    
+                    // メモリクリア
+                    clearMemoryAndFiles()
+                    
                     currentView = ViewState.LocalFileList
                 },
                 onNavigateToPreviousFile = {
