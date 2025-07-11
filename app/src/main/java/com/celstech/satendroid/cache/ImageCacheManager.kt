@@ -18,10 +18,13 @@ class ImageCacheManager(private val context: Context) {
         private const val PREFS_NAME = "image_cache_settings"
         private const val KEY_CACHE_ENABLED = "cache_enabled"
         private const val KEY_CLEAR_CACHE_ON_DELETE = "clear_cache_on_delete"
-        private const val KEY_LAST_ZIP_URI = "last_zip_uri"
+        private const val KEY_LAST_ZIP_IDENTIFIER = "last_zip_identifier"  // URI文字列からファイル識別子に変更
         private const val KEY_LAST_IMAGE_INDEX = "last_image_index"
         private const val KEY_LAST_ZIP_HASH = "last_zip_hash"
         private const val KEY_REVERSE_SWIPE_DIRECTION = "reverse_swipe_direction"
+        // 各ファイルごとの位置保存用プレフィックス
+        private const val KEY_FILE_POSITION_PREFIX = "position_"
+        private const val KEY_FILE_HASH_PREFIX = "hash_"
     }
     
     private val sharedPrefs: SharedPreferences = 
@@ -35,6 +38,42 @@ class ImageCacheManager(private val context: Context) {
     
     private val _reverseSwipeDirection = MutableStateFlow(sharedPrefs.getBoolean(KEY_REVERSE_SWIPE_DIRECTION, false))
     val reverseSwipeDirection: StateFlow<Boolean> = _reverseSwipeDirection.asStateFlow()
+    
+    /**
+     * ファイル識別子を生成（エンコーディング統一）
+     */
+    private fun generateFileIdentifier(zipUri: Uri, zipFile: File?): String {
+        return try {
+            when {
+                zipFile != null && zipFile.exists() -> {
+                    // Fileオブジェクトがある場合は絶対パスを使用（最も確実）
+                    zipFile.absolutePath
+                }
+                zipUri.scheme == "file" -> {
+                    // File URIの場合はパスを正規化
+                    val path = zipUri.path ?: zipUri.toString()
+                    File(path).absolutePath
+                }
+                else -> {
+                    // Content URIの場合はそのまま使用（正規化困難）
+                    zipUri.toString()
+                }
+            }
+        } catch (e: Exception) {
+            // フォールバック：URIをそのまま文字列化
+            zipUri.toString()
+        }
+    }
+    
+    /**
+     * ファイルパスを正規化してキー用に使用
+     */
+    private fun normalizeFilePathForKey(filePath: String): String {
+        return filePath
+            .replace("\\", "/")  // バックスラッシュをスラッシュに統一
+            .replace("//+".toRegex(), "/")  // 連続スラッシュを単一に
+            .removeSuffix("/")  // 末尾のスラッシュを除去
+    }
     
     /**
      * キャッシュ機能の有効/無効を設定
@@ -66,14 +105,25 @@ class ImageCacheManager(private val context: Context) {
     fun saveCurrentPosition(zipUri: Uri, imageIndex: Int, zipFile: File? = null) {
         if (!_cacheEnabled.value) return
         
+        val zipIdentifier = generateFileIdentifier(zipUri, zipFile)
         val zipHash = generateZipHash(zipUri, zipFile)
+        val normalizedKey = normalizeFilePathForKey(zipIdentifier)
+        
+        android.util.Log.d("ImageCacheManager", "Saving position - File: $zipIdentifier, Index: $imageIndex, Key: $normalizedKey")
         
         sharedPrefs.edit().apply {
-            putString(KEY_LAST_ZIP_URI, zipUri.toString())
+            // 各ファイルごとに位置とハッシュを保存
+            putInt(KEY_FILE_POSITION_PREFIX + normalizedKey, imageIndex)
+            putString(KEY_FILE_HASH_PREFIX + normalizedKey, zipHash)
+            
+            // 後方互換性のため、最後のファイル情報も保存
+            putString(KEY_LAST_ZIP_IDENTIFIER, zipIdentifier)
             putInt(KEY_LAST_IMAGE_INDEX, imageIndex)
             putString(KEY_LAST_ZIP_HASH, zipHash)
             apply()
         }
+        
+        android.util.Log.d("ImageCacheManager", "Position saved successfully")
     }
     
     /**
@@ -82,14 +132,35 @@ class ImageCacheManager(private val context: Context) {
     fun getSavedPosition(zipUri: Uri, zipFile: File? = null): Int? {
         if (!_cacheEnabled.value) return null
         
-        val savedZipUri = sharedPrefs.getString(KEY_LAST_ZIP_URI, null)
-        val savedZipHash = sharedPrefs.getString(KEY_LAST_ZIP_HASH, null)
+        val currentZipIdentifier = generateFileIdentifier(zipUri, zipFile)
         val currentZipHash = generateZipHash(zipUri, zipFile)
+        val normalizedKey = normalizeFilePathForKey(currentZipIdentifier)
         
-        return if (savedZipUri == zipUri.toString() && savedZipHash == currentZipHash) {
+        android.util.Log.d("ImageCacheManager", "Getting saved position - File: $currentZipIdentifier, Key: $normalizedKey")
+        
+        // 各ファイルごとの保存データを確認
+        val savedPosition = sharedPrefs.getInt(KEY_FILE_POSITION_PREFIX + normalizedKey, -1)
+        val savedHash = sharedPrefs.getString(KEY_FILE_HASH_PREFIX + normalizedKey, null)
+        
+        android.util.Log.d("ImageCacheManager", "Found position: $savedPosition, hash match: ${savedHash == currentZipHash}")
+        
+        if (savedPosition >= 0 && savedHash == currentZipHash) {
+            android.util.Log.d("ImageCacheManager", "Returning saved position: $savedPosition")
+            return savedPosition
+        }
+        
+        // フォールバック: 古い形式のデータをチェック
+        val savedZipIdentifier = sharedPrefs.getString(KEY_LAST_ZIP_IDENTIFIER, null)
+        val savedZipHash = sharedPrefs.getString(KEY_LAST_ZIP_HASH, null)
+        
+        android.util.Log.d("ImageCacheManager", "Fallback check - identifier match: ${savedZipIdentifier == currentZipIdentifier}, hash match: ${savedZipHash == currentZipHash}")
+        
+        return if (savedZipIdentifier == currentZipIdentifier && savedZipHash == currentZipHash) {
             val savedIndex = sharedPrefs.getInt(KEY_LAST_IMAGE_INDEX, 0)
+            android.util.Log.d("ImageCacheManager", "Returning fallback position: $savedIndex")
             if (savedIndex >= 0) savedIndex else null
         } else {
+            android.util.Log.d("ImageCacheManager", "No valid saved position found")
             null
         }
     }
@@ -99,9 +170,19 @@ class ImageCacheManager(private val context: Context) {
      */
     fun clearCache() {
         sharedPrefs.edit().apply {
-            remove(KEY_LAST_ZIP_URI)
+            // 古いキーをクリア
+            remove(KEY_LAST_ZIP_IDENTIFIER)
+            remove("last_zip_uri")  // 古いキーも削除
             remove(KEY_LAST_IMAGE_INDEX)
             remove(KEY_LAST_ZIP_HASH)
+            
+            // 各ファイルごとのキーをクリア
+            val allKeys = sharedPrefs.all.keys
+            allKeys.forEach { key ->
+                if (key.startsWith(KEY_FILE_POSITION_PREFIX) || key.startsWith(KEY_FILE_HASH_PREFIX)) {
+                    remove(key)
+                }
+            }
             apply()
         }
     }
@@ -112,12 +193,22 @@ class ImageCacheManager(private val context: Context) {
     fun clearCacheForZip(zipUri: Uri, zipFile: File? = null) {
         if (!_cacheEnabled.value) return
         
-        val savedZipUri = sharedPrefs.getString(KEY_LAST_ZIP_URI, null)
-        val savedZipHash = sharedPrefs.getString(KEY_LAST_ZIP_HASH, null)
-        val currentZipHash = generateZipHash(zipUri, zipFile)
+        val currentZipIdentifier = generateFileIdentifier(zipUri, zipFile)
+        val normalizedKey = normalizeFilePathForKey(currentZipIdentifier)
         
-        if (savedZipUri == zipUri.toString() && savedZipHash == currentZipHash) {
-            clearCache()
+        sharedPrefs.edit().apply {
+            // 各ファイルごとのデータをクリア
+            remove(KEY_FILE_POSITION_PREFIX + normalizedKey)
+            remove(KEY_FILE_HASH_PREFIX + normalizedKey)
+            
+            // 最後のファイルが該当する場合はそのデータもクリア
+            val savedZipIdentifier = sharedPrefs.getString(KEY_LAST_ZIP_IDENTIFIER, null)
+            if (savedZipIdentifier == currentZipIdentifier) {
+                remove(KEY_LAST_ZIP_IDENTIFIER)
+                remove(KEY_LAST_IMAGE_INDEX)
+                remove(KEY_LAST_ZIP_HASH)
+            }
+            apply()
         }
     }
     
@@ -144,16 +235,16 @@ class ImageCacheManager(private val context: Context) {
                     if (file.exists()) {
                         "${file.length()}_${file.lastModified()}"
                     } else {
-                        zipUri.toString()
+                        generateFileIdentifier(zipUri, zipFile)
                     }
                 }
                 else -> {
-                    // Content URIの場合は、URIそのものをハッシュとして使用
-                    zipUri.toString()
+                    // Content URIの場合は、識別子をハッシュとして使用
+                    generateFileIdentifier(zipUri, zipFile)
                 }
             }
         } catch (e: Exception) {
-            zipUri.toString()
+            generateFileIdentifier(zipUri, zipFile)
         }
     }
     

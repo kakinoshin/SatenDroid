@@ -50,6 +50,9 @@ fun MainScreen() {
 
     // フラグ：ファイル移動中かどうかを追跡
     var isNavigatingToNewFile by remember { mutableStateOf(false) }
+    
+    // フラグ：位置復元中かどうかを追跡（位置保存を一時停止するため）
+    var isRestoringPosition by remember { mutableStateOf(false) }
 
     // コルーチンジョブの管理（メモリリーク防止）
     var currentLoadingJob by remember { mutableStateOf<Job?>(null) }
@@ -96,6 +99,8 @@ fun MainScreen() {
         currentZipUri = null
         currentZipFile = null
         fileNavigationInfo = null
+        isNavigatingToNewFile = false
+        isRestoringPosition = false
 
         println("DEBUG: All state and memory cleared")
     }
@@ -127,7 +132,7 @@ fun MainScreen() {
                     val extractedImages = zipImageHandler.extractImagesFromZip(uri)
 
                     if (extractedImages.isNotEmpty()) {
-                        // 新しい状態を一度に設定
+                        // 新しい状態を順序立てて設定（currentZipUriを最初に設定してPagerState再作成をトリガー）
                         currentZipUri = uri
                         currentZipFile = null
                         imageFiles = extractedImages
@@ -144,6 +149,7 @@ fun MainScreen() {
                 } finally {
                     isLoading = false
                     isNavigatingToNewFile = false
+                    isRestoringPosition = false  // 位置復元フラグもリセット
                 }
             }
         }
@@ -152,16 +158,39 @@ fun MainScreen() {
     // Pager state for image viewing
     val pagerState = rememberPagerState { imageFiles.size }
 
-    // 保存された位置を復元（ファイル移動中でない場合のみ）
-    LaunchedEffect(imageFiles, currentZipUri, isNavigatingToNewFile) {
-        println("DEBUG: LaunchedEffect for position restore - imageFiles: ${imageFiles.size}, currentZipUri: $currentZipUri, isNavigating: $isNavigatingToNewFile")
+    // ファイルが変更されたときにPagerStateを0ページにリセット
+    LaunchedEffect(
+        if (currentZipUri != null) zipImageHandler.generateFileIdentifier(currentZipUri!!, currentZipFile) else null
+    ) {
+        if (currentZipUri != null && imageFiles.isNotEmpty()) {
+            val fileId = zipImageHandler.generateFileIdentifier(currentZipUri!!, currentZipFile)
+            println("DEBUG: File changed, resetting pager to page 0: $fileId")
+            isRestoringPosition = true  // 位置復元開始フラグを立てる
+            pagerState.scrollToPage(0)
+        }
+    }
+
+    // 保存された位置を復元（ファイル移動完了後、ページリセット後）
+    LaunchedEffect(currentZipUri, imageFiles.size, isNavigatingToNewFile) {
         if (imageFiles.isNotEmpty() && currentZipUri != null && !isNavigatingToNewFile) {
+            // ページリセットが完了するのを待つ
+            kotlinx.coroutines.delay(150)
+            
+            val fileId = zipImageHandler.generateFileIdentifier(currentZipUri!!, currentZipFile)
+            println("DEBUG: Attempting position restore for file: $fileId, imageFiles: ${imageFiles.size}")
+            
             val savedPosition = zipImageHandler.getSavedPosition(currentZipUri!!, currentZipFile)
             println("DEBUG: Saved position for file: $savedPosition")
-            if (savedPosition != null && savedPosition < imageFiles.size) {
+            if (savedPosition != null && savedPosition < imageFiles.size && savedPosition > 0) {
                 println("DEBUG: Restoring position to: $savedPosition")
                 pagerState.animateScrollToPage(savedPosition)
+            } else {
+                println("DEBUG: No saved position or position is 0, staying at page 0")
             }
+            
+            // 位置復元完了フラグを下ろす
+            isRestoringPosition = false
+            println("DEBUG: Position restoration completed, enabling position saving")
         }
     }
 
@@ -181,10 +210,6 @@ fun MainScreen() {
                 // 古いリソースをクリア（状態は保持してUIを安定させる）
                 clearMemoryResources()
 
-                // PagerStateを即座にリセット（アニメーションなし）
-                println("DEBUG: Resetting pager to page 0")
-                pagerState.scrollToPage(0)
-
                 // 新しいファイル情報を準備
                 println("DEBUG: Preparing new file info")
                 val newZipUri = Uri.fromFile(newZipFile)
@@ -200,17 +225,14 @@ fun MainScreen() {
                     val newNavigationInfo = fileNavigationManager.getNavigationInfo(newZipFile)
 
                     // 全ての新しい状態を一度に設定（UIの一貫性を保つ）
+                    // currentZipUriを最初に設定することで、PagerStateが新しく作成される
                     println("DEBUG: Updating all state atomically")
                     currentZipUri = newZipUri
                     currentZipFile = newZipFile
                     fileNavigationInfo = newNavigationInfo
                     imageFiles = extractedImages
 
-                    // 確実に最初のページを表示
-                    println("DEBUG: Final scroll to page 0")
-                    pagerState.scrollToPage(0)
-
-                    println("DEBUG: Successfully navigated to ${newZipFile.name}, showing page 0 of ${extractedImages.size}")
+                    println("DEBUG: Successfully navigated to ${newZipFile.name}, new PagerState will start at page 0")
                 } else {
                     println("DEBUG: No images found in ${newZipFile.name}")
                     // 画像が見つからない場合は状態をリセット
@@ -232,18 +254,23 @@ fun MainScreen() {
                 println("DEBUG: Completing navigation - setting isLoading=false, isNavigatingToNewFile=false")
                 isLoading = false
                 isNavigatingToNewFile = false
+                isRestoringPosition = false  // 位置復元フラグもリセット
             }
         }
     }
 
     // 現在の位置を保存
     LaunchedEffect(pagerState.currentPage, currentZipUri) {
-        if (currentZipUri != null && imageFiles.isNotEmpty()) {
+        if (currentZipUri != null && imageFiles.isNotEmpty() && !isNavigatingToNewFile && !isRestoringPosition) {
+            val fileId = zipImageHandler.generateFileIdentifier(currentZipUri!!, currentZipFile)
+            println("DEBUG: Saving position ${pagerState.currentPage} for file: $fileId")
             zipImageHandler.saveCurrentPosition(
                 currentZipUri!!,
                 pagerState.currentPage,
                 currentZipFile
             )
+        } else if (isRestoringPosition) {
+            println("DEBUG: Skipping position save during restoration (currentPage: ${pagerState.currentPage})")
         }
     }
 
@@ -294,7 +321,7 @@ fun MainScreen() {
                                 zipImageHandler.extractImagesFromZip(Uri.fromFile(file))
 
                             if (extractedImages.isNotEmpty()) {
-                                // 新しい状態を一度に設定
+                                // 新しい状態を順序立てて設定（currentZipUriを最初に設定してPagerState再作成をトリガー）
                                 currentZipUri = Uri.fromFile(file)
                                 currentZipFile = file
                                 imageFiles = extractedImages
@@ -312,6 +339,7 @@ fun MainScreen() {
                         } finally {
                             isLoading = false
                             isNavigatingToNewFile = false
+                            isRestoringPosition = false  // 位置復元フラグもリセット
                         }
                     }
                 },
@@ -361,7 +389,7 @@ fun MainScreen() {
                     // ジョブをキャンセル
                     currentLoadingJob?.cancel()
 
-                    // 完全な状態とメモリクリア
+                    // 完全な状態とメモリクリア（currentZipUriをnullにすることでPagerStateもリセット）
                     clearAllStateAndMemory()
 
                     currentView = ViewState.LocalFileList

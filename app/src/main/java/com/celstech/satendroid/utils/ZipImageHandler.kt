@@ -105,6 +105,32 @@ class ZipImageHandler(private val context: Context) {
     fun getCacheManager(): ImageCacheManager = cacheManager
 
     /**
+     * ファイル識別子を生成（エンコーディング統一）
+     */
+    fun generateFileIdentifier(zipUri: Uri, zipFile: File? = null): String {
+        return try {
+            when {
+                zipFile != null && zipFile.exists() -> {
+                    // Fileオブジェクトがある場合は絶対パスを使用（最も確実）
+                    zipFile.absolutePath
+                }
+                zipUri.scheme == "file" -> {
+                    // File URIの場合はパスを正規化
+                    val path = zipUri.path ?: zipUri.toString()
+                    File(path).absolutePath
+                }
+                else -> {
+                    // Content URIの場合はそのまま使用（正規化困難）
+                    zipUri.toString()
+                }
+            }
+        } catch (e: Exception) {
+            // フォールバック：URIをそのまま文字列化
+            zipUri.toString()
+        }
+    }
+
+    /**
      * 現在の表示位置を保存
      */
     fun saveCurrentPosition(zipUri: Uri, imageIndex: Int, zipFile: File? = null) {
