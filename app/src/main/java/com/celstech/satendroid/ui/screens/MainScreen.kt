@@ -28,8 +28,22 @@ import kotlinx.coroutines.Job
 import java.io.File
 
 /**
- * メイン画面 - 全体的な画面遷移とステート管理を行う
- * 直接ZIPアクセス版 - テンポラリファイルに展開せずに直接画像を表示
+ * データクラス：画像ビューア用の完全な状態（初期ページ位置を含む）
+ */
+data class ImageViewerState(
+    val imageEntries: List<ZipImageEntry>,
+    val currentZipUri: Uri,
+    val currentZipFile: File?,
+    val fileNavigationInfo: FileNavigationManager.NavigationInfo?,
+    val initialPage: Int = 0  // 初期表示ページ（保存位置から取得）
+) {
+    val fileId: String
+        get() = currentZipFile?.absolutePath ?: currentZipUri.toString()
+}
+
+/**
+ * メイン画面 - シンプルなシーケンシャル処理版
+ * 1. ファイルを開いて 2. 前回の状態を取得 3. 該当するイメージを表示
  */
 @OptIn(ExperimentalFoundationApi::class, ExperimentalPermissionsApi::class)
 @Composable
@@ -40,66 +54,97 @@ fun MainScreen() {
     // Main state for the current view
     var currentView by remember { mutableStateOf<ViewState>(ViewState.LocalFileList) }
 
-    // State for image viewing - 直接アクセス版
-    var imageEntries by remember { mutableStateOf<List<ZipImageEntry>>(emptyList()) }
+    // 統合された画像ビューア状態
+    var imageViewerState by remember { mutableStateOf<ImageViewerState?>(null) }
     var isLoading by remember { mutableStateOf(false) }
     var showTopBar by remember { mutableStateOf(false) }
-    var currentZipUri by remember { mutableStateOf<Uri?>(null) }
-    var currentZipFile by remember { mutableStateOf<File?>(null) }
-
-    // State for file navigation
-    var fileNavigationInfo by remember { mutableStateOf<FileNavigationManager.NavigationInfo?>(null) }
-
-    // フラグ：ファイル移動中かどうかを追跡
-    var isNavigatingToNewFile by remember { mutableStateOf(false) }
-    
-    // フラグ：位置復元中かどうかを追跡（位置保存を一時停止するため）
-    var isRestoringPosition by remember { mutableStateOf(false) }
 
     // コルーチンジョブの管理（メモリリーク防止）
     var currentLoadingJob by remember { mutableStateOf<Job?>(null) }
 
-    // State for directory navigation - ファイル選択画面の現在のパスを保持
+    // State for directory navigation
     var savedDirectoryPath by remember { mutableStateOf("") }
 
-    // 読書状態更新のための状態（non-nullファイルのみ）
+    // 読書状態更新のための状態
     var lastReadingProgress by remember { mutableStateOf<Pair<File, Int>?>(null) }
-
-    // ファイルナビゲーション時の読書状態更新用
     var fileCompletionUpdate by remember { mutableStateOf<File?>(null) }
 
-    // 直接ZIP画像ハンドラー（テンポラリファイル展開不要）
+    // 直接ZIP画像ハンドラー
     val directZipHandler = remember { DirectZipImageHandler(context) }
 
     // File navigation manager
     val fileNavigationManager = remember { FileNavigationManager(context) }
 
-    // メモリクリア関数（状態は保持）
+    // Pager state - ファイル変更時に適切なページに移動
+    val pagerState = rememberPagerState { 
+        imageViewerState?.imageEntries?.size ?: 0 
+    }
+
+    // ファイルが変更されたときに保存されたページに移動
+    LaunchedEffect(imageViewerState?.fileId) {
+        val state = imageViewerState
+        if (state != null && state.imageEntries.isNotEmpty()) {
+            val targetPage = state.initialPage.coerceIn(0, state.imageEntries.size - 1)
+            println("DEBUG: Moving to saved position: $targetPage for file: ${state.fileId}")
+            
+            if (pagerState.currentPage != targetPage) {
+                pagerState.scrollToPage(targetPage)
+            }
+        }
+    }
+
+    // シンプルなファイル開く処理
+    suspend fun openZipFile(zipUri: Uri, zipFile: File? = null): ImageViewerState? {
+        return try {
+            println("DEBUG: Opening ZIP file: ${zipFile?.name ?: zipUri}")
+            
+            // 1. ファイルを開いて画像エントリを取得
+            val imageEntryList = directZipHandler.getImageEntriesFromZip(zipUri, zipFile)
+            if (imageEntryList.isEmpty()) {
+                println("DEBUG: No images found in ZIP")
+                return null
+            }
+            
+            // 2. 前回の状態を取得
+            val savedPosition = directZipHandler.getSavedPosition(zipUri, zipFile) ?: 0
+            val validPosition = savedPosition.coerceIn(0, imageEntryList.size - 1)
+            println("DEBUG: Saved position: $savedPosition, Valid position: $validPosition")
+            
+            // 3. ファイルナビゲーション情報を取得
+            val navigationInfo = if (zipFile != null) {
+                fileNavigationManager.getNavigationInfo(zipFile)
+            } else null
+            
+            // 4. 統合状態を作成（該当するイメージ表示の準備完了）
+            ImageViewerState(
+                imageEntries = imageEntryList,
+                currentZipUri = zipUri,
+                currentZipFile = zipFile,
+                fileNavigationInfo = navigationInfo,
+                initialPage = validPosition
+            ).also {
+                println("DEBUG: Created ImageViewerState - ${imageEntryList.size} images, initial page: $validPosition")
+            }
+            
+        } catch (e: Exception) {
+            println("DEBUG: Error opening ZIP file: ${e.message}")
+            e.printStackTrace()
+            null
+        }
+    }
+
+    // メモリクリア関数
     fun clearMemoryResources() {
-        println("DEBUG: Clearing memory resources only")
-
-        // メモリキャッシュをクリア（テンポラリファイルは使用しないため、この処理のみ）
+        println("DEBUG: Clearing memory resources")
         directZipHandler.clearMemoryCache()
-
-        println("DEBUG: Memory resources cleared")
     }
 
     // 完全な状態クリア関数
     fun clearAllStateAndMemory() {
-        println("DEBUG: Starting comprehensive cleanup")
-
-        // リソースをクリア
+        println("DEBUG: Clearing all state and memory")
         clearMemoryResources()
-
-        // 状態をクリア
-        imageEntries = emptyList()
-        currentZipUri = null
-        currentZipFile = null
-        fileNavigationInfo = null
-        isNavigatingToNewFile = false
-        isRestoringPosition = false
-
-        println("DEBUG: All state and memory cleared")
+        imageViewerState = null
+        println("DEBUG: All state cleared")
     }
 
     // Permission state for external storage
@@ -114,80 +159,28 @@ fun MainScreen() {
         uri?.let {
             println("DEBUG: ZIP file picked from device")
 
-            // 既存のジョブをキャンセル
             currentLoadingJob?.cancel()
-
-            isNavigatingToNewFile = true
             isLoading = true
 
             currentLoadingJob = coroutineScope.launch {
                 try {
-                    // リソースクリア（状態は保持）
                     clearMemoryResources()
-
-                    // 画像エントリを取得
-                    val imageEntryList = directZipHandler.getImageEntriesFromZip(uri)
-
-                    if (imageEntryList.isNotEmpty()) {
-                        // 新しい状態を順序立てて設定（currentZipUriを最初に設定してPagerState再作成をトリガー）
-                        currentZipUri = uri
-                        currentZipFile = null
-                        imageEntries = imageEntryList
+                    
+                    val newState = openZipFile(uri)
+                    if (newState != null) {
+                        imageViewerState = newState
                         currentView = ViewState.ImageViewer
-
-                        println("DEBUG: Successfully loaded ZIP from device with ${imageEntryList.size} images")
+                        println("DEBUG: Successfully loaded ZIP from device")
                     } else {
-                        println("DEBUG: No images found in selected ZIP")
-                        // 画像が見つからない場合は元の状態を保持
+                        println("DEBUG: Failed to load ZIP from device")
                     }
                 } catch (e: Exception) {
                     println("DEBUG: Error loading ZIP from device: ${e.message}")
                     e.printStackTrace()
                 } finally {
                     isLoading = false
-                    isNavigatingToNewFile = false
-                    isRestoringPosition = false  // 位置復元フラグもリセット
                 }
             }
-        }
-    }
-
-    // Pager state for image viewing
-    val pagerState = rememberPagerState { imageEntries.size }
-
-    // ファイルが変更されたときにPagerStateを0ページにリセット
-    LaunchedEffect(
-        if (currentZipUri != null) directZipHandler.generateFileIdentifier(currentZipUri!!, currentZipFile) else null
-    ) {
-        if (currentZipUri != null && imageEntries.isNotEmpty()) {
-            val fileId = directZipHandler.generateFileIdentifier(currentZipUri!!, currentZipFile)
-            println("DEBUG: File changed, resetting pager to page 0: $fileId")
-            isRestoringPosition = true  // 位置復元開始フラグを立てる
-            pagerState.scrollToPage(0)
-        }
-    }
-
-    // 保存された位置を復元（ファイル移動完了後、ページリセット後）
-    LaunchedEffect(currentZipUri, imageEntries.size, isNavigatingToNewFile) {
-        if (imageEntries.isNotEmpty() && currentZipUri != null && !isNavigatingToNewFile) {
-            // ページリセットが完了するのを待つ
-            kotlinx.coroutines.delay(150)
-            
-            val fileId = directZipHandler.generateFileIdentifier(currentZipUri!!, currentZipFile)
-            println("DEBUG: Attempting position restore for file: $fileId, imageEntries: ${imageEntries.size}")
-            
-            val savedPosition = directZipHandler.getSavedPosition(currentZipUri!!, currentZipFile)
-            println("DEBUG: Saved position for file: $savedPosition")
-            if (savedPosition != null && savedPosition < imageEntries.size && savedPosition > 0) {
-                println("DEBUG: Restoring position to: $savedPosition")
-                pagerState.animateScrollToPage(savedPosition)
-            } else {
-                println("DEBUG: No saved position or position is 0, staying at page 0")
-            }
-            
-            // 位置復元完了フラグを下ろす
-            isRestoringPosition = false
-            println("DEBUG: Position restoration completed, enabling position saving")
         }
     }
 
@@ -195,102 +188,58 @@ fun MainScreen() {
     fun navigateToZipFile(newZipFile: File) {
         println("DEBUG: Navigating to new file: ${newZipFile.name}")
 
-        // 既存のジョブをキャンセル
         currentLoadingJob?.cancel()
-
-        // ファイル移動中フラグを設定
-        isNavigatingToNewFile = true
         isLoading = true
 
         currentLoadingJob = coroutineScope.launch {
             try {
-                // 古いリソースをクリア（状態は保持してUIを安定させる）
                 clearMemoryResources()
-
-                // 新しいファイル情報を準備
-                println("DEBUG: Preparing new file info")
-                val newZipUri = Uri.fromFile(newZipFile)
-
-                // 画像エントリを取得
-                println("DEBUG: Getting image entries from ${newZipFile.name}")
-                val imageEntryList = directZipHandler.getImageEntriesFromZip(newZipUri, newZipFile)
-                println("DEBUG: Got ${imageEntryList.size} image entries from ${newZipFile.name}")
-
-                if (imageEntryList.isNotEmpty()) {
-                    // ファイルナビゲーション情報を更新
-                    println("DEBUG: Updating file navigation info")
-                    val newNavigationInfo = fileNavigationManager.getNavigationInfo(newZipFile)
-
-                    // 全ての新しい状態を一度に設定（UIの一貫性を保つ）
-                    // currentZipUriを最初に設定することで、PagerStateが新しく作成される
-                    println("DEBUG: Updating all state atomically")
-                    currentZipUri = newZipUri
-                    currentZipFile = newZipFile
-                    fileNavigationInfo = newNavigationInfo
-                    imageEntries = imageEntryList
-
-                    println("DEBUG: Successfully navigated to ${newZipFile.name}, new PagerState will start at page 0")
+                
+                val newState = openZipFile(Uri.fromFile(newZipFile), newZipFile)
+                if (newState != null) {
+                    imageViewerState = newState
+                    println("DEBUG: Successfully navigated to ${newZipFile.name}")
                 } else {
-                    println("DEBUG: No images found in ${newZipFile.name}")
-                    // 画像が見つからない場合は状態をリセット
-                    currentZipUri = null
-                    currentZipFile = null
-                    fileNavigationInfo = null
-                    imageEntries = emptyList()
+                    println("DEBUG: Failed to navigate to ${newZipFile.name}")
+                    imageViewerState = null
                 }
             } catch (e: Exception) {
                 println("DEBUG: Error navigating to file ${newZipFile.name}: ${e.message}")
                 e.printStackTrace()
-
-                // エラー時は状態をリセット
-                currentZipUri = null
-                currentZipFile = null
-                fileNavigationInfo = null
-                imageEntries = emptyList()
+                imageViewerState = null
             } finally {
-                println("DEBUG: Completing navigation - setting isLoading=false, isNavigatingToNewFile=false")
                 isLoading = false
-                isNavigatingToNewFile = false
-                isRestoringPosition = false  // 位置復元フラグもリセット
             }
         }
     }
 
-    // 現在の位置を保存
-    LaunchedEffect(pagerState.currentPage, currentZipUri) {
-        if (currentZipUri != null && imageEntries.isNotEmpty() && !isNavigatingToNewFile && !isRestoringPosition) {
-            val fileId = directZipHandler.generateFileIdentifier(currentZipUri!!, currentZipFile)
-            println("DEBUG: Saving position ${pagerState.currentPage} for file: $fileId")
+    // 現在の位置を保存（シンプルな処理）
+    LaunchedEffect(pagerState.currentPage, imageViewerState?.fileId) {
+        val state = imageViewerState
+        if (state != null) {
+            println("DEBUG: Saving position ${pagerState.currentPage} for file: ${state.fileId}")
             directZipHandler.saveCurrentPosition(
-                currentZipUri!!,
+                state.currentZipUri,
                 pagerState.currentPage,
-                currentZipFile
+                state.currentZipFile
             )
-        } else if (isRestoringPosition) {
-            println("DEBUG: Skipping position save during restoration (currentPage: ${pagerState.currentPage})")
         }
     }
 
-    // Auto-hide top bar after 3 seconds when manually shown
+    // Auto-hide top bar
     LaunchedEffect(showTopBar) {
-        if (showTopBar && imageEntries.isNotEmpty()) {
+        if (showTopBar && imageViewerState != null) {
             delay(3000)
             showTopBar = false
         }
     }
 
-    // Cleanup extracted files when component is disposed
+    // Cleanup when component is disposed
     DisposableEffect(Unit) {
         onDispose {
-            println("DEBUG: MainScreen disposing - cleaning up all resources")
-
-            // ジョブをキャンセル
+            println("DEBUG: MainScreen disposing")
             currentLoadingJob?.cancel()
-
-            // 完全なクリア
             clearAllStateAndMemory()
-
-            println("DEBUG: MainScreen cleanup completed")
         }
     }
 
@@ -302,46 +251,30 @@ fun MainScreen() {
                 onFileSelected = { file ->
                     println("DEBUG: File selected: ${file.name}")
 
-                    // 既存のジョブをキャンセル
                     currentLoadingJob?.cancel()
-
-                    isNavigatingToNewFile = true
                     isLoading = true
 
                     currentLoadingJob = coroutineScope.launch {
                         try {
-                            // リソースクリア（状態は保持）
                             clearMemoryResources()
-
-                            // 画像エントリを取得
-                            val imageEntryList =
-                                directZipHandler.getImageEntriesFromZip(Uri.fromFile(file), file)
-
-                            if (imageEntryList.isNotEmpty()) {
-                                // 新しい状態を順序立てて設定（currentZipUriを最初に設定してPagerState再作成をトリガー）
-                                currentZipUri = Uri.fromFile(file)
-                                currentZipFile = file
-                                imageEntries = imageEntryList
-                                fileNavigationInfo = fileNavigationManager.getNavigationInfo(file)
+                            
+                            val newState = openZipFile(Uri.fromFile(file), file)
+                            if (newState != null) {
+                                imageViewerState = newState
                                 currentView = ViewState.ImageViewer
-
-                                println("DEBUG: Successfully loaded ${file.name} with ${imageEntryList.size} images")
+                                println("DEBUG: Successfully loaded ${file.name}")
                             } else {
-                                println("DEBUG: No images found in ${file.name}")
-                                // 画像が見つからない場合は元の状態を保持
+                                println("DEBUG: Failed to load ${file.name}")
                             }
                         } catch (e: Exception) {
                             println("DEBUG: Error loading file ${file.name}: ${e.message}")
                             e.printStackTrace()
                         } finally {
                             isLoading = false
-                            isNavigatingToNewFile = false
-                            isRestoringPosition = false  // 位置復元フラグもリセット
                         }
                     }
                 },
                 onDirectoryChanged = { path ->
-                    // 現在のディレクトリパスを保存
                     savedDirectoryPath = path
                 },
                 onOpenFromDevice = {
@@ -360,79 +293,65 @@ fun MainScreen() {
                 isLoading = isLoading,
                 onReturnFromViewer = if (lastReadingProgress != null) {
                     {
-                        println("DEBUG: Returned from image viewer - reading status will be updated")
-                        // readingStatusUpdateとして渡された後、lastReadingProgressをクリア
+                        println("DEBUG: Returned from image viewer")
                     }
                 } else null,
                 readingStatusUpdate = lastReadingProgress?.also {
-                    // 読書状態更新データが使用されたらクリア
                     lastReadingProgress = null
                 },
                 fileCompletionUpdate = fileCompletionUpdate?.also {
-                    // 既読マークデータが使用されたらクリア
                     fileCompletionUpdate = null
                 }
             )
         }
 
         is ViewState.ImageViewer -> {
-            DirectZipImageViewerScreen(
-                imageEntries = imageEntries,
-                currentZipFile = currentZipFile,
-                pagerState = pagerState,
-                showTopBar = showTopBar,
-                onToggleTopBar = { showTopBar = !showTopBar },
-                onBackToFiles = {
-                    // ジョブをキャンセル
-                    currentLoadingJob?.cancel()
+            val state = imageViewerState
+            if (state != null) {
+                DirectZipImageViewerScreen(
+                    imageEntries = state.imageEntries,
+                    currentZipFile = state.currentZipFile,
+                    pagerState = pagerState,
+                    showTopBar = showTopBar,
+                    onToggleTopBar = { showTopBar = !showTopBar },
+                    onBackToFiles = {
+                        currentLoadingJob?.cancel()
+                        clearAllStateAndMemory()
+                        currentView = ViewState.LocalFileList
+                    },
+                    onNavigateToPreviousFile = {
+                        println("DEBUG: Previous file button clicked")
 
-                    // 完全な状態とメモリクリア（currentZipUriをnullにすることでPagerStateもリセット）
-                    clearAllStateAndMemory()
+                        state.currentZipFile?.let { currentFile ->
+                            lastReadingProgress = Pair(currentFile, pagerState.currentPage)
+                        }
 
-                    currentView = ViewState.LocalFileList
-                },
-                onNavigateToPreviousFile = {
-                    println("DEBUG: Previous file button clicked")
+                        state.fileNavigationInfo?.previousFile?.let { previousFile ->
+                            navigateToZipFile(previousFile)
+                        } ?: println("DEBUG: No previous file available")
+                    },
+                    onNavigateToNextFile = {
+                        println("DEBUG: Next file button clicked")
 
-                    // 現在のファイルの読書状態を保存（現在のページで）
-                    currentZipFile?.let { currentFile ->
-                        lastReadingProgress = Pair(currentFile, pagerState.currentPage)
-                        println("DEBUG: Saving current progress before moving to previous file: page ${pagerState.currentPage + 1}")
+                        state.currentZipFile?.let { currentFile ->
+                            fileCompletionUpdate = currentFile
+                        }
+
+                        state.fileNavigationInfo?.nextFile?.let { nextFile ->
+                            navigateToZipFile(nextFile)
+                        } ?: println("DEBUG: No next file available")
+                    },
+                    fileNavigationInfo = state.fileNavigationInfo,
+                    cacheManager = directZipHandler.getCacheManager(),
+                    onPageChanged = { currentPage, totalPages, zipFile ->
+                        lastReadingProgress = Pair(zipFile, currentPage)
+
+                        if (currentPage >= totalPages - 1) {
+                            fileCompletionUpdate = zipFile
+                        }
                     }
-
-                    fileNavigationInfo?.previousFile?.let { previousFile ->
-                        println("DEBUG: Navigating to previous file: ${previousFile.name}")
-                        navigateToZipFile(previousFile)
-                    } ?: println("DEBUG: No previous file available")
-                },
-                onNavigateToNextFile = {
-                    println("DEBUG: Next file button clicked")
-
-                    // 現在のファイルを既読にマーク（最後まで読んだとして扱う）
-                    currentZipFile?.let { currentFile ->
-                        fileCompletionUpdate = currentFile
-                        println("DEBUG: Marking current file as completed before moving to next file: ${currentFile.name}")
-                    }
-
-                    fileNavigationInfo?.nextFile?.let { nextFile ->
-                        println("DEBUG: Navigating to next file: ${nextFile.name}")
-                        navigateToZipFile(nextFile)
-                    } ?: println("DEBUG: No next file available")
-                },
-                fileNavigationInfo = fileNavigationInfo,
-                cacheManager = directZipHandler.getCacheManager(),
-                onPageChanged = { currentPage, totalPages, zipFile ->
-                    // 読書進捗を保存
-                    lastReadingProgress = Pair(zipFile, currentPage)
-                    println("DEBUG: Reading progress updated - Page: ${currentPage + 1}/$totalPages, File: ${zipFile.name}")
-
-                    // 最後のページに到達した場合は自動的に既読にマーク
-                    if (currentPage >= totalPages - 1) {
-                        println("DEBUG: Reached last page, marking as completed automatically")
-                        fileCompletionUpdate = zipFile
-                    }
-                }
-            )
+                )
+            }
         }
 
         is ViewState.DropboxBrowser -> {
