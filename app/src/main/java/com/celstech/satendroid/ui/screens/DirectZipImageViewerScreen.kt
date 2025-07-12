@@ -21,7 +21,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -40,7 +40,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -57,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import coil.compose.AsyncImagePainter
 import coil.compose.rememberAsyncImagePainter
 import com.celstech.satendroid.navigation.FileNavigationManager
 import com.celstech.satendroid.utils.ZipImageEntry
@@ -89,7 +89,7 @@ fun DirectZipImageViewerScreen(
 
     // State for page jump slider
     var showPageSlider by remember { mutableStateOf(false) }
-    var sliderValue by remember { mutableFloatStateOf(0f) }
+    var sliderValue by remember { mutableStateOf(0f) }
 
     // System UI visibility control with Fire OS compatibility
     fun setSystemUIVisibility(visible: Boolean) {
@@ -215,12 +215,48 @@ fun DirectZipImageViewerScreen(
             userScrollEnabled = !showPageSlider, // Disable swipe when slider is shown
             reverseLayout = reverseSwipeDirection
         ) { index ->
-            Image(
-                painter = rememberAsyncImagePainter(model = imageEntries[index]),
-                contentDescription = "Image ${index + 1}",
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Fit
-            )
+            Box(modifier = Modifier.fillMaxSize()) {
+                var isLoading by remember { mutableStateOf(true) }
+                
+                val painter = rememberAsyncImagePainter(
+                    model = imageEntries[index],
+                    onState = { state ->
+                        isLoading = state is AsyncImagePainter.State.Loading
+                    }
+                )
+                
+                Image(
+                    painter = painter,
+                    contentDescription = "Image ${index + 1}",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit
+                )
+                
+                // ローディングインジケーター
+                if (isLoading) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.8f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                color = Color.White,
+                                modifier = Modifier.size(48.dp)
+                            )
+                            Text(
+                                text = "画像を読み込み中...",
+                                color = Color.White,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    }
+                }
+            }
         }
 
         // Top clickable area for going back (only when slider is not shown)
@@ -400,14 +436,42 @@ fun DirectZipImageViewerScreen(
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             // Thumbnail
-                            Image(
-                                painter = rememberAsyncImagePainter(model = targetEntry),
-                                contentDescription = "Thumbnail",
+                            Box(
                                 modifier = Modifier
                                     .size(120.dp)
-                                    .clip(RoundedCornerShape(8.dp)),
-                                contentScale = ContentScale.Crop
-                            )
+                                    .clip(RoundedCornerShape(8.dp))
+                            ) {
+                                var thumbnailLoading by remember { mutableStateOf(true) }
+                                
+                                val thumbnailPainter = rememberAsyncImagePainter(
+                                    model = targetEntry,
+                                    onState = { state ->
+                                        thumbnailLoading = state is AsyncImagePainter.State.Loading
+                                    }
+                                )
+                                
+                                Image(
+                                    painter = thumbnailPainter,
+                                    contentDescription = "Thumbnail",
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
+                                )
+                                
+                                if (thumbnailLoading) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .background(Color.Black.copy(alpha = 0.7f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        CircularProgressIndicator(
+                                            color = Color.White,
+                                            modifier = Modifier.size(24.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                    }
+                                }
+                            }
 
                             // File info
                             Column(

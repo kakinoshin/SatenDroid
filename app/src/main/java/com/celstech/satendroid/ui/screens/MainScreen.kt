@@ -116,7 +116,7 @@ fun MainScreen() {
             } else null
             
             // 4. 統合状態を作成（該当するイメージ表示の準備完了）
-            ImageViewerState(
+            val result = ImageViewerState(
                 imageEntries = imageEntryList,
                 currentZipUri = zipUri,
                 currentZipFile = zipFile,
@@ -125,6 +125,20 @@ fun MainScreen() {
             ).also {
                 println("DEBUG: Created ImageViewerState - ${imageEntryList.size} images, initial page: $validPosition")
             }
+            
+            // 5. 初期画像のプリロード開始（バックグラウンドで実行）- パフォーマンス改善のため無効化
+            /*
+            coroutineScope.launch {
+                try {
+                    println("DEBUG: Starting preload around page $validPosition")
+                    directZipHandler.preloadAroundPage(imageEntryList, validPosition)
+                } catch (e: Exception) {
+                    println("DEBUG: Preload failed: ${e.message}")
+                }
+            }
+            */
+            
+            result
             
         } catch (e: Exception) {
             println("DEBUG: Error opening ZIP file: ${e.message}")
@@ -213,7 +227,7 @@ fun MainScreen() {
         }
     }
 
-    // 現在の位置を保存（シンプルな処理）
+    // 現在の位置を保存（プリロード無効化）
     LaunchedEffect(pagerState.currentPage, imageViewerState?.fileId) {
         val state = imageViewerState
         if (state != null) {
@@ -223,6 +237,15 @@ fun MainScreen() {
                 pagerState.currentPage,
                 state.currentZipFile
             )
+            
+            // ページ変更時にプリロードを実行 - パフォーマンス改善のため無効化
+            /*
+            try {
+                directZipHandler.preloadAroundPage(state.imageEntries, pagerState.currentPage)
+            } catch (e: Exception) {
+                println("DEBUG: Page change preload failed: ${e.message}")
+            }
+            */
         }
     }
 

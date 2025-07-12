@@ -4,6 +4,10 @@ import android.content.Context
 import android.net.Uri
 import android.provider.MediaStore
 import com.celstech.satendroid.cache.ImageCacheManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
 import java.util.zip.ZipInputStream
@@ -20,6 +24,15 @@ class DirectZipImageHandler(private val context: Context) {
     
     // メモリキャッシュ（画像データを一時的に保存）
     private val imageDataCache = mutableMapOf<String, ByteArray>()
+    
+    // プリロード範囲（現在のページの前後何ページまでプリロードするか）
+    private val preloadRange = 2
+    
+    // プリロード中のページを追跡（重複防止）
+    private val preloadingPages = mutableSetOf<Int>()
+    
+    // 現在のZIPファイルのURI（キャッシュの一貫性確保）
+    private var currentZipUri: Uri? = null
     
     /**
      * ZIPファイルから画像エントリのリストを取得
@@ -65,13 +78,19 @@ class DirectZipImageHandler(private val context: Context) {
     
     /**
      * 指定された画像エントリの画像データを取得
+     * キャッシュから取得できない場合のみZIPから読み取り
      */
-    fun getImageData(imageEntry: ZipImageEntry): ByteArray? {
+    suspend fun getImageData(imageEntry: ZipImageEntry): ByteArray? = withContext(Dispatchers.IO) {
         // キャッシュから取得を試行
         val cacheKey = imageEntry.id
-        imageDataCache[cacheKey]?.let { return it }
+        imageDataCache[cacheKey]?.let { 
+            println("DEBUG: Cache hit for ${imageEntry.fileName}")
+            return@withContext it 
+        }
         
-        // ZIPから読み取り
+        // キャッシュにない場合は単体で読み込み
+        println("DEBUG: Cache miss for ${imageEntry.fileName}, loading from ZIP")
+        
         try {
             context.contentResolver.openInputStream(imageEntry.zipUri)?.use { inputStream ->
                 ZipInputStream(inputStream).use { zipInputStream ->
@@ -82,7 +101,8 @@ class DirectZipImageHandler(private val context: Context) {
                             val imageData = zipInputStream.readBytes()
                             // メモリキャッシュに保存
                             imageDataCache[cacheKey] = imageData
-                            return imageData
+                            println("DEBUG: Loaded ${imageEntry.fileName} (${imageData.size} bytes)")
+                            return@withContext imageData
                         }
                         
                         zipInputStream.closeEntry()
@@ -94,7 +114,7 @@ class DirectZipImageHandler(private val context: Context) {
             e.printStackTrace()
         }
         
-        return null
+        return@withContext null
     }
     
     /**
@@ -165,5 +185,23 @@ class DirectZipImageHandler(private val context: Context) {
         // 該当ファイルのメモリキャッシュも削除
         val fileId = generateFileIdentifier(zipUri, zipFile)
         imageDataCache.keys.removeAll { it.startsWith(fileId) }
+    }
+    
+    /**
+     * 複数の画像エントリを効率的に一括読み込み（無効化）
+     * パフォーマンス改善のため一時的に無効化
+     */
+    suspend fun batchLoadImages(imageEntries: List<ZipImageEntry>): Map<String, ByteArray> {
+        println("DEBUG: Batch loading disabled for performance optimization")
+        return emptyMap() // 何もしない
+    }
+    
+    /**
+     * 指定されたページの周辺画像をプリロード（無効化）
+     * パフォーマンス改善のため一時的に無効化
+     */
+    suspend fun preloadAroundPage(imageEntries: List<ZipImageEntry>, currentPage: Int) {
+        println("DEBUG: Preload disabled for performance optimization")
+        return // 何もしない
     }
 }

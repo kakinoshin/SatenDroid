@@ -20,7 +20,7 @@ class ZipImageFetcherNew(
 ) : Fetcher {
     
     override suspend fun fetch(): FetchResult {
-        // 画像データを取得
+        // 画像データを取得（suspend関数に対応）
         val imageData = zipHandler.getImageData(data)
             ?: throw IllegalStateException("Failed to load image: ${data.fileName}")
         
