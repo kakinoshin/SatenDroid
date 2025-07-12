@@ -13,7 +13,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
 import com.celstech.satendroid.dropbox.DropboxAuthManager
-import com.celstech.satendroid.ui.components.ImageViewerScreen
+import com.celstech.satendroid.ui.screens.MainScreen
 import com.celstech.satendroid.ui.theme.SatenDroidTheme
 import kotlinx.coroutines.launch
 
@@ -42,7 +42,8 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxSize(),
                         color = MaterialTheme.colorScheme.background
                     ) {
-                        ImageViewerScreen()
+                        // 従来の展開方式を使用（安定版）
+                        MainScreen()
                     }
                 }
             }
