@@ -42,8 +42,9 @@ data class ImageViewerState(
 }
 
 /**
- * メイン画面 - シンプルなシーケンシャル処理版
+ * メイン画面 - 最適化されたZipファイル管理版
  * 1. ファイルを開いて 2. 前回の状態を取得 3. 該当するイメージを表示
+ * Zipファイルを開いたままにして再オープンを回避
  */
 @OptIn(ExperimentalFoundationApi::class, ExperimentalPermissionsApi::class)
 @Composable
@@ -93,29 +94,35 @@ fun MainScreen() {
         }
     }
 
-    // シンプルなファイル開く処理
+    // 最適化されたファイル開く処理
     suspend fun openZipFile(zipUri: Uri, zipFile: File? = null): ImageViewerState? {
         return try {
             println("DEBUG: Opening ZIP file: ${zipFile?.name ?: zipUri}")
             
-            // 1. ファイルを開いて画像エントリを取得
+            // 1. 既存のZipファイルを閉じる
+            directZipHandler.closeCurrentZipFile()
+            
+            // 2. ファイルを開いて画像エントリを取得
             val imageEntryList = directZipHandler.getImageEntriesFromZip(zipUri, zipFile)
             if (imageEntryList.isEmpty()) {
                 println("DEBUG: No images found in ZIP")
                 return null
             }
             
-            // 2. 前回の状態を取得
+            // 3. Zipファイルを開いたままにする（最適化のポイント）
+            // DirectZipImageHandlerが内部でZipファイルを準備する
+            
+            // 4. 前回の状態を取得
             val savedPosition = directZipHandler.getSavedPosition(zipUri, zipFile) ?: 0
             val validPosition = savedPosition.coerceIn(0, imageEntryList.size - 1)
             println("DEBUG: Saved position: $savedPosition, Valid position: $validPosition")
             
-            // 3. ファイルナビゲーション情報を取得
+            // 5. ファイルナビゲーション情報を取得
             val navigationInfo = if (zipFile != null) {
                 fileNavigationManager.getNavigationInfo(zipFile)
             } else null
             
-            // 4. 統合状態を作成（該当するイメージ表示の準備完了）
+            // 6. 統合状態を作成（該当するイメージ表示の準備完了）
             val result = ImageViewerState(
                 imageEntries = imageEntryList,
                 currentZipUri = zipUri,
@@ -126,23 +133,14 @@ fun MainScreen() {
                 println("DEBUG: Created ImageViewerState - ${imageEntryList.size} images, initial page: $validPosition")
             }
             
-            // 5. 初期画像のプリロード開始（バックグラウンドで実行）- パフォーマンス改善のため無効化
-            /*
-            coroutineScope.launch {
-                try {
-                    println("DEBUG: Starting preload around page $validPosition")
-                    directZipHandler.preloadAroundPage(imageEntryList, validPosition)
-                } catch (e: Exception) {
-                    println("DEBUG: Preload failed: ${e.message}")
-                }
-            }
-            */
-            
+            println("DEBUG: ZIP file opened and ready for optimized access")
             result
             
         } catch (e: Exception) {
             println("DEBUG: Error opening ZIP file: ${e.message}")
             e.printStackTrace()
+            // エラー時はZipファイルを閉じる
+            directZipHandler.closeCurrentZipFile()
             null
         }
     }
@@ -153,10 +151,11 @@ fun MainScreen() {
         directZipHandler.clearMemoryCache()
     }
 
-    // 完全な状態クリア関数
+    // 完全な状態クリア関数（Zipファイルも閉じる）
     fun clearAllStateAndMemory() {
         println("DEBUG: Clearing all state and memory")
         clearMemoryResources()
+        directZipHandler.closeCurrentZipFile() // 最適化：Zipファイルを閉じる
         imageViewerState = null
         println("DEBUG: All state cleared")
     }
@@ -227,7 +226,7 @@ fun MainScreen() {
         }
     }
 
-    // 現在の位置を保存（プリロード無効化）
+    // 現在の位置を保存
     LaunchedEffect(pagerState.currentPage, imageViewerState?.fileId) {
         val state = imageViewerState
         if (state != null) {
@@ -237,15 +236,6 @@ fun MainScreen() {
                 pagerState.currentPage,
                 state.currentZipFile
             )
-            
-            // ページ変更時にプリロードを実行 - パフォーマンス改善のため無効化
-            /*
-            try {
-                directZipHandler.preloadAroundPage(state.imageEntries, pagerState.currentPage)
-            } catch (e: Exception) {
-                println("DEBUG: Page change preload failed: ${e.message}")
-            }
-            */
         }
     }
 
@@ -260,15 +250,22 @@ fun MainScreen() {
     // Cleanup when component is disposed
     DisposableEffect(Unit) {
         onDispose {
-            println("DEBUG: MainScreen disposing")
+            println("DEBUG: MainScreen disposing - cleaning up ZIP resources")
             currentLoadingJob?.cancel()
             clearAllStateAndMemory()
+            directZipHandler.cleanup() // 最適化：完全なクリーンアップ
         }
     }
 
     // 画面遷移のハンドリング
     when (currentView) {
         is ViewState.LocalFileList -> {
+            // ファイル一覧に戻った時はZipファイルを閉じる
+            LaunchedEffect(currentView) {
+                println("DEBUG: Returned to file list - closing ZIP file")
+                directZipHandler.closeCurrentZipFile()
+            }
+            
             FileSelectionScreen(
                 initialPath = savedDirectoryPath,
                 onFileSelected = { file ->
@@ -338,8 +335,9 @@ fun MainScreen() {
                     showTopBar = showTopBar,
                     onToggleTopBar = { showTopBar = !showTopBar },
                     onBackToFiles = {
+                        println("DEBUG: Back to files - closing ZIP file")
                         currentLoadingJob?.cancel()
-                        clearAllStateAndMemory()
+                        clearAllStateAndMemory() // Zipファイルも閉じる
                         currentView = ViewState.LocalFileList
                     },
                     onNavigateToPreviousFile = {
@@ -350,7 +348,7 @@ fun MainScreen() {
                         }
 
                         state.fileNavigationInfo?.previousFile?.let { previousFile ->
-                            navigateToZipFile(previousFile)
+                            navigateToZipFile(previousFile) // 新しいファイルを開く前に古いファイルを閉じる
                         } ?: println("DEBUG: No previous file available")
                     },
                     onNavigateToNextFile = {
@@ -361,11 +359,12 @@ fun MainScreen() {
                         }
 
                         state.fileNavigationInfo?.nextFile?.let { nextFile ->
-                            navigateToZipFile(nextFile)
+                            navigateToZipFile(nextFile) // 新しいファイルを開く前に古いファイルを閉じる
                         } ?: println("DEBUG: No next file available")
                     },
                     fileNavigationInfo = state.fileNavigationInfo,
                     cacheManager = directZipHandler.getCacheManager(),
+                    directZipHandler = directZipHandler,
                     onPageChanged = { currentPage, totalPages, zipFile ->
                         lastReadingProgress = Pair(zipFile, currentPage)
 
@@ -378,6 +377,12 @@ fun MainScreen() {
         }
 
         is ViewState.DropboxBrowser -> {
+            // Dropbox画面に移動する時もZipファイルを閉じる
+            LaunchedEffect(currentView) {
+                println("DEBUG: Moved to Dropbox browser - closing ZIP file")
+                directZipHandler.closeCurrentZipFile()
+            }
+            
             DropboxScreen(
                 dropboxAuthManager = LocalDropboxAuthManager.current,
                 onBackToLocal = {
@@ -390,8 +395,15 @@ fun MainScreen() {
         }
 
         is ViewState.Settings -> {
-            SettingsScreen(
+            // 設定画面に移動する時もZipファイルを閉じる
+            LaunchedEffect(currentView) {
+                println("DEBUG: Moved to Settings - closing ZIP file")
+                directZipHandler.closeCurrentZipFile()
+            }
+            
+            SettingsScreenNew(
                 cacheManager = directZipHandler.getCacheManager(),
+                directZipHandler = directZipHandler,
                 onBackPressed = {
                     currentView = ViewState.LocalFileList
                 }

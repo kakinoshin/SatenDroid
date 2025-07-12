@@ -17,7 +17,7 @@ import com.celstech.satendroid.ui.components.InfoDialog
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(
+fun SettingsScreenNew(
     cacheManager: ImageCacheManager,
     directZipHandler: com.celstech.satendroid.utils.DirectZipImageHandler? = null,
     onBackPressed: () -> Unit
@@ -143,35 +143,6 @@ fun SettingsScreen(
                             Text("メモリキャッシュをクリア")
                         }
                     }
-                }
-            }
-            
-            Spacer(modifier = Modifier.height(24.dp))
-            
-            // アプリ情報
-            Card(
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp)
-                ) {
-                    Text(
-                        text = "アプリについて",
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold
-                    )
-                    
-                    Spacer(modifier = Modifier.height(12.dp))
-                    
-                    Text(
-                        text = "SatenDroid",
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Text(
-                        text = "ZIP内画像ビューアー（高速化版）",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
                 }
             }
         }

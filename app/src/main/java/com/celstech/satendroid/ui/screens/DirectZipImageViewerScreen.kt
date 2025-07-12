@@ -59,6 +59,10 @@ import androidx.core.view.WindowInsetsControllerCompat
 import coil.compose.AsyncImagePainter
 import coil.compose.rememberAsyncImagePainter
 import com.celstech.satendroid.navigation.FileNavigationManager
+import com.celstech.satendroid.ui.components.PerformanceAlert
+import com.celstech.satendroid.ui.components.PerformanceMonitor
+import com.celstech.satendroid.ui.components.PerformanceToggleButton
+import com.celstech.satendroid.utils.DirectZipImageHandler
 import com.celstech.satendroid.utils.ZipImageEntry
 import kotlinx.coroutines.launch
 import java.io.File
@@ -81,6 +85,7 @@ fun DirectZipImageViewerScreen(
     onNavigateToNextFile: (() -> Unit)? = null,
     fileNavigationInfo: FileNavigationManager.NavigationInfo? = null,
     cacheManager: com.celstech.satendroid.cache.ImageCacheManager,
+    directZipHandler: DirectZipImageHandler? = null,
     onPageChanged: ((currentPage: Int, totalPages: Int, zipFile: File) -> Unit)? = null
 ) {
     val coroutineScope = rememberCoroutineScope()
@@ -90,6 +95,9 @@ fun DirectZipImageViewerScreen(
     // State for page jump slider
     var showPageSlider by remember { mutableStateOf(false) }
     var sliderValue by remember { mutableStateOf(0f) }
+    
+    // パフォーマンス監視UI用の状態
+    var showPerformanceMonitor by remember { mutableStateOf(false) }
 
     // System UI visibility control with Fire OS compatibility
     fun setSystemUIVisibility(visible: Boolean) {
@@ -521,6 +529,35 @@ fun DirectZipImageViewerScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
+            }
+        }
+        
+        // パフォーマンス監視UI
+        if (directZipHandler != null) {
+            // パフォーマンス監視パネル
+            PerformanceMonitor(
+                zipHandler = directZipHandler,
+                isVisible = showPerformanceMonitor,
+                modifier = Modifier.align(Alignment.TopStart)
+            )
+            
+            // パフォーマンス警告
+            PerformanceAlert(
+                zipHandler = directZipHandler,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = if (showPerformanceMonitor) 200.dp else 0.dp)
+            )
+            
+            // パフォーマンス監視トグルボタン（開発者用）
+            if (!showPageSlider && !showTopBar) {
+                PerformanceToggleButton(
+                    isVisible = showPerformanceMonitor,
+                    onToggle = { showPerformanceMonitor = it },
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(16.dp)
+                )
             }
         }
     }

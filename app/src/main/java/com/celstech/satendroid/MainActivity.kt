@@ -99,7 +99,16 @@ class MainActivity : ComponentActivity() {
     
     override fun onDestroy() {
         super.onDestroy()
-        // メモリキャッシュをクリア
-        directZipHandler.clearMemoryCache()
+        // 未保存の位置をフラッシュしてからクリーンアップ
+        lifecycleScope.launch {
+            try {
+                directZipHandler.getCacheManager().flushPendingPositions()
+            } catch (e: Exception) {
+                println("DEBUG: Failed to flush pending positions: ${e.message}")
+            }
+            // リソースのクリーンアップ
+            directZipHandler.cleanup()
+            directZipHandler.getCacheManager().cleanup()
+        }
     }
 }
