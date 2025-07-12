@@ -11,7 +11,7 @@ import com.celstech.satendroid.repository.LocalFileRepository
 import com.celstech.satendroid.selection.SelectionManager
 import com.celstech.satendroid.ui.models.LocalFileUiState
 import com.celstech.satendroid.ui.models.LocalItem
-import com.celstech.satendroid.utils.ZipImageHandler
+import com.celstech.satendroid.utils.DirectZipImageHandler
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,12 +21,13 @@ import java.io.File
 /**
  * ローカルファイル管理のViewModel
  * Repository、Navigation、Selectionの各Managerを使用してスリム化
+ * 直接ZIPアクセス版 - DirectZipImageHandlerを使用
  */
 class LocalFileViewModel(
     private val repository: LocalFileRepository,
     private val navigationManager: LocalFileNavigationManager,
     private val selectionManager: SelectionManager,
-    private val zipImageHandler: ZipImageHandler,
+    private val directZipHandler: DirectZipImageHandler,
     private val fileNavigationManager: FileNavigationManager
 ) : ViewModel() {
 
@@ -146,7 +147,7 @@ class LocalFileViewModel(
             if (result) {
                 // キャッシュからも削除
                 val zipUri = item.file.toUri()
-                zipImageHandler.onZipFileDeleted(zipUri, item.file)
+                directZipHandler.onZipFileDeleted(zipUri, item.file)
             }
         }
         return result
@@ -174,7 +175,7 @@ class LocalFileViewModel(
                 when (item) {
                     is LocalItem.ZipFile -> {
                         val zipUri = item.file.toUri()
-                        zipImageHandler.onZipFileDeleted(zipUri, item.file)
+                        directZipHandler.onZipFileDeleted(zipUri, item.file)
                     }
                     is LocalItem.Folder -> {
                         clearCacheForFolder(item.path)
@@ -196,7 +197,7 @@ class LocalFileViewModel(
         // 実際の実装では、フォルダ内のZIPファイルを再帰的に検索して
         // 各ファイルのキャッシュをクリアする必要があります
         // ここでは簡略化して、すべてのキャッシュをクリア
-        zipImageHandler.getCacheManager().clearCache()
+        directZipHandler.getCacheManager().clearCache()
     }
 
     // Dialog state management
@@ -335,6 +336,12 @@ class LocalFileViewModel(
         println("DEBUG: Returned from image viewer - refreshing directory to get latest reading status")
     }
 
+    override fun onCleared() {
+        super.onCleared()
+        // ViewModelが破棄される際にメモリキャッシュをクリア
+        directZipHandler.clearMemoryCache()
+    }
+
     companion object {
         fun provideFactory(context: Context): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
@@ -342,13 +349,13 @@ class LocalFileViewModel(
                 val repository = LocalFileRepository(context)
                 val navigationManager = LocalFileNavigationManager()
                 val selectionManager = SelectionManager()
-                val zipImageHandler = ZipImageHandler(context)
+                val directZipHandler = DirectZipImageHandler(context)
                 val fileNavigationManager = FileNavigationManager(context)
                 return LocalFileViewModel(
                     repository, 
                     navigationManager, 
                     selectionManager, 
-                    zipImageHandler, 
+                    directZipHandler, 
                     fileNavigationManager
                 ) as T
             }

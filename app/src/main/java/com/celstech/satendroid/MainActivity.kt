@@ -12,9 +12,13 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
+import coil.Coil
+import coil.ImageLoader
 import com.celstech.satendroid.dropbox.DropboxAuthManager
 import com.celstech.satendroid.ui.screens.MainScreen
 import com.celstech.satendroid.ui.theme.SatenDroidTheme
+import com.celstech.satendroid.utils.DirectZipImageHandler
+import com.celstech.satendroid.utils.ZipImageFetcherNew
 import kotlinx.coroutines.launch
 
 // Global composition local for DropboxAuthManager
@@ -25,12 +29,19 @@ val LocalDropboxAuthManager = staticCompositionLocalOf<DropboxAuthManager> {
 class MainActivity : ComponentActivity() {
     
     private lateinit var dropboxAuthManager: DropboxAuthManager
+    private lateinit var directZipHandler: DirectZipImageHandler
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
         // Initialize Dropbox auth manager
         dropboxAuthManager = DropboxAuthManager(this)
+        
+        // Initialize direct ZIP handler
+        directZipHandler = DirectZipImageHandler(this)
+        
+        // Setup Coil with custom fetcher for ZIP images
+        setupCoil()
         
         // Handle OAuth redirect if this activity was opened from a redirect
         handleOAuthRedirect(intent)
@@ -42,12 +53,26 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxSize(),
                         color = MaterialTheme.colorScheme.background
                     ) {
-                        // 従来の展開方式を使用（安定版）
+                        // 新しい直接アクセス方式を使用
                         MainScreen()
                     }
                 }
             }
         }
+    }
+    
+    private fun setupCoil() {
+        val imageLoader = ImageLoader.Builder(this)
+            .components {
+                // ZIP内画像の直接読み込み用Fetcherを追加
+                add(ZipImageFetcherNew.Factory(directZipHandler))
+            }
+            .build()
+        
+        // Coilのデフォルトローダーを設定
+        Coil.setImageLoader(imageLoader)
+        
+        println("DEBUG: Coil configured with ZipImageFetcherNew")
     }
     
     override fun onNewIntent(intent: Intent?) {
@@ -70,5 +95,11 @@ class MainActivity : ComponentActivity() {
         } else {
             println("DEBUG: Intent does not match OAuth redirect pattern")
         }
+    }
+    
+    override fun onDestroy() {
+        super.onDestroy()
+        // メモリキャッシュをクリア
+        directZipHandler.clearMemoryCache()
     }
 }

@@ -1,8 +1,3 @@
-// このファイルは一時的に無効化されています
-// 必要なクラス（ZipImageEntry、DirectZipImageHandler）が無効化されているため
-// コンパイルエラーを解決するため一時的にコメントアウト
-
-/*
 package com.celstech.satendroid.utils
 
 import android.graphics.BitmapFactory
@@ -25,9 +20,9 @@ class ZipImageFetcherNew(
 ) : Fetcher {
     
     override suspend fun fetch(): FetchResult {
-        // キャッシュされた画像データを取得
-        val imageData = zipHandler.getCachedImageData(data)
-            ?: throw IllegalStateException("Image not cached: ${data.fileName}")
+        // 画像データを取得
+        val imageData = zipHandler.getImageData(data)
+            ?: throw IllegalStateException("Failed to load image: ${data.fileName}")
         
         // ByteArrayからBitmapを作成
         val bitmap = BitmapFactory.decodeByteArray(imageData, 0, imageData.size)
@@ -47,4 +42,3 @@ class ZipImageFetcherNew(
         }
     }
 }
-*/

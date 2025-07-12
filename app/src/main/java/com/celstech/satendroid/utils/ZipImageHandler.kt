@@ -9,101 +9,52 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.util.zip.ZipInputStream
 
+/**
+ * 従来のZipImageHandler - テンポラリファイル展開方式（非推奨）
+ * 新しいDirectZipImageHandlerを使用してください
+ * このクラスは互換性のためのみ保持されています
+ */
+@Deprecated(
+    message = "このクラスは非推奨です。DirectZipImageHandlerを使用してください。",
+    replaceWith = ReplaceWith("DirectZipImageHandler")
+)
 class ZipImageHandler(private val context: Context) {
     private val cacheManager = ImageCacheManager(context)
+    
+    /**
+     * ZIPファイルから画像を抽出（非推奨：テンポラリファイルに展開）
+     * 新しいDirectZipImageHandler.getImageEntriesFromZipを使用してください
+     */
+    @Deprecated(
+        message = "この方法はテンポラリファイルを作成します。DirectZipImageHandler.getImageEntriesFromZipを使用してください。",
+        replaceWith = ReplaceWith("DirectZipImageHandler.getImageEntriesFromZip(zipUri)")
+    )
     fun extractImagesFromZip(zipUri: Uri): List<File> {
-        val extractedImageFiles = mutableListOf<File>()
-
-        try {
-            context.contentResolver.openInputStream(zipUri)?.use { inputStream ->
-                ZipInputStream(inputStream).use { zipInputStream ->
-                    // Supported image extensions
-                    val supportedExtensions = setOf("jpg", "jpeg", "png", "gif", "bmp", "webp")
-
-                    var entry = zipInputStream.nextEntry
-                    while (entry != null) {
-                        // Check if entry is an image file
-                        val fileName = entry.name
-                        val fileExtension = fileName.substringAfterLast('.', "").lowercase()
-
-                        if (!entry.isDirectory && fileExtension in supportedExtensions) {
-                            // Create a temporary file for the image
-                            val sanitizedFileName = fileName.substringAfterLast('/')
-                            val tempImageFile = File(context.cacheDir, sanitizedFileName)
-
-                            // Extract the image
-                            FileOutputStream(tempImageFile).use { output ->
-                                zipInputStream.copyTo(output)
-                            }
-
-                            extractedImageFiles.add(tempImageFile)
-                        }
-
-                        zipInputStream.closeEntry()
-                        entry = zipInputStream.nextEntry
-                    }
-                }
-            }
-        } catch (e: IOException) {
-            e.printStackTrace()
-        }
-
-        // Sort extracted images by filename
-        return extractedImageFiles.sortedBy { it.name }
+        println("WARNING: extractImagesFromZip is deprecated. Use DirectZipImageHandler.getImageEntriesFromZip instead.")
+        
+        // 非推奨処理として空のリストを返す
+        // 実際の展開処理は削除されました
+        return emptyList()
     }
 
-    // Clean up extracted temporary files
+    /**
+     * 抽出されたテンポラリファイルをクリア（非推奨）
+     * 新しい方式ではテンポラリファイルは作成されません
+     */
+    @Deprecated(
+        message = "新しい方式ではテンポラリファイルは作成されません。DirectZipImageHandler.clearMemoryCache()を使用してください。",
+        replaceWith = ReplaceWith("DirectZipImageHandler.clearMemoryCache()")
+    )
     fun clearExtractedFiles(context: Context, files: List<File>) {
-        android.util.Log.e("ZipImageHandler", "[START] clearExtractedFiles: files=${files.map { it.absolutePath }}")
-        if (files.isEmpty()) {
-            android.util.Log.w("ZipImageHandler", "[WARN] clearExtractedFiles: files is empty!")
-        }
-        files.forEach { file ->
-            try {
-                android.util.Log.e("ZipImageHandler", "[TRY] Delete: ${file.absolutePath} exists=${file.exists()} canRead=${file.canRead()} canWrite=${file.canWrite()}")
-                if (file.exists()) {
-                    if (file.absolutePath.startsWith("/storage/emulated/0/")) {
-                        val uri = getFileUri(context, file)
-                        android.util.Log.e("ZipImageHandler", "[INFO] getFileUri result: $uri")
-                        if (uri != null) {
-                            val rows = context.contentResolver.delete(uri, null, null)
-                            android.util.Log.e("ZipImageHandler", "[INFO] contentResolver.delete rows: $rows")
-                            if (rows == 0) {
-                                val values = android.content.ContentValues().apply {
-                                    put(MediaStore.MediaColumns.DATA, file.absolutePath)
-                                }
-                                val insertedUri = context.contentResolver.insert(MediaStore.Files.getContentUri("external"), values)
-                                android.util.Log.e("ZipImageHandler", "[INFO] insertedUri: $insertedUri")
-                                if (insertedUri != null) {
-                                    val delRows = context.contentResolver.delete(insertedUri, null, null)
-                                    android.util.Log.e("ZipImageHandler", "[INFO] delete after insert rows: $delRows")
-                                } else {
-                                    android.util.Log.e("ZipImageHandler", "[ERROR] Failed to insert file into MediaStore: ${file.absolutePath}")
-                                }
-                            }
-                        } else {
-                            val deleted = file.delete()
-                            android.util.Log.e("ZipImageHandler", "[INFO] file.delete() result: $deleted")
-                        }
-                    } else {
-                        val deleted = file.delete()
-                        android.util.Log.e("ZipImageHandler", "[INFO] file.delete() result: $deleted")
-                    }
-                } else {
-                    android.util.Log.w("ZipImageHandler", "[WARN] File does not exist: ${file.absolutePath}")
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("ZipImageHandler", "[EXCEPTION] Failed to delete: ${file.absolutePath}", e)
-            }
-        }
-        android.util.Log.e("ZipImageHandler", "[END] clearExtractedFiles")
+        println("WARNING: clearExtractedFiles is deprecated. No temporary files are created in the new approach.")
+        // 新しい方式では何もする必要がない
     }
 
     /**
      * キャッシュマネージャーを取得
      */
     fun getCacheManager(): ImageCacheManager = cacheManager
-
+    
     /**
      * ファイル識別子を生成（エンコーディング統一）
      */
@@ -129,21 +80,21 @@ class ZipImageHandler(private val context: Context) {
             zipUri.toString()
         }
     }
-
+    
     /**
      * 現在の表示位置を保存
      */
     fun saveCurrentPosition(zipUri: Uri, imageIndex: Int, zipFile: File? = null) {
         cacheManager.saveCurrentPosition(zipUri, imageIndex, zipFile)
     }
-
+    
     /**
      * 保存された表示位置を取得
      */
     fun getSavedPosition(zipUri: Uri, zipFile: File? = null): Int? {
         return cacheManager.getSavedPosition(zipUri, zipFile)
     }
-
+    
     /**
      * ZIPファイル削除時の処理
      */
