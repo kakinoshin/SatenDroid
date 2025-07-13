@@ -144,9 +144,9 @@ class DirectZipImageHandler(private val context: Context) {
     }
     
     /**
-     * ZIPファイルから画像エントリのリストを取得（キャッシュ機能付き）
+     * ZIPファイルから画像エントリのリストを取得（高速化・非同期版）
      */
-    fun getImageEntriesFromZip(zipUri: Uri, zipFile: File? = null): List<ZipImageEntry> {
+    suspend fun getImageEntriesFromZip(zipUri: Uri, zipFile: File? = null): List<ZipImageEntry> = withContext(Dispatchers.IO) {
         val zipKey = generateFileIdentifier(zipUri, zipFile)
         val fileModified = zipFile?.lastModified() ?: System.currentTimeMillis()
         
@@ -155,10 +155,12 @@ class DirectZipImageHandler(private val context: Context) {
             if (cachedData.lastModified == fileModified) {
                 currentZipUri = zipUri
                 currentZipEntries = cachedData.entries
-                return cachedData.entries
+                println("DEBUG: Using cached entries for ${zipFile?.name ?: zipUri}")
+                return@withContext cachedData.entries
             }
         }
         
+        println("DEBUG: Scanning ZIP file entries for ${zipFile?.name ?: zipUri}")
         val imageEntries = mutableListOf<ZipImageEntry>()
         
         try {
@@ -166,6 +168,7 @@ class DirectZipImageHandler(private val context: Context) {
                 ZipInputStream(inputStream).use { zipInputStream ->
                     var entry = zipInputStream.nextEntry
                     var index = 0
+                    var processedCount = 0
                     
                     while (entry != null) {
                         val entryName = entry.name
@@ -186,14 +189,24 @@ class DirectZipImageHandler(private val context: Context) {
                         
                         zipInputStream.closeEntry()
                         entry = zipInputStream.nextEntry
+                        
+                        // 進行状況を定期的に報告（重い処理のため）
+                        processedCount++
+                        if (processedCount % 50 == 0) {
+                            println("DEBUG: Processed $processedCount entries, found ${imageEntries.size} images...")
+                            yield() // 他のコルーチンに処理を譲る
+                        }
                     }
                 }
             }
         } catch (e: IOException) {
             e.printStackTrace()
+            return@withContext emptyList()
         }
         
-        // ファイル名でソート
+        println("DEBUG: Found ${imageEntries.size} images, sorting...")
+        
+        // ファイル名でソート（バックグラウンドで実行）
         val sortedEntries = imageEntries.sortedBy { it.fileName }
         
         // キャッシュに保存
@@ -201,7 +214,8 @@ class DirectZipImageHandler(private val context: Context) {
         currentZipUri = zipUri
         currentZipEntries = sortedEntries
         
-        return sortedEntries
+        println("DEBUG: ZIP entry scanning completed - ${sortedEntries.size} images ready")
+        return@withContext sortedEntries
     }
     
     /**
@@ -232,8 +246,11 @@ class DirectZipImageHandler(private val context: Context) {
             imageDataCache[imageEntry.id] = imageData
             println("DEBUG: Loaded ${imageEntry.fileName} (${imageData.size} bytes) in ${loadTime}ms")
             
-            // 周辺ページのプリロードをトリガー
-            triggerPreload(imageEntry.index)
+            // プリロードは遅延実行（初回表示への影響を最小化）
+            preloadScope.launch {
+                delay(500) // 500ms後にプリロード開始
+                triggerPreload(imageEntry.index)
+            }
         }
         
         updateMetrics(loadTime, isHit = false)
@@ -298,7 +315,7 @@ class DirectZipImageHandler(private val context: Context) {
     }
     
     /**
-     * 最適化用にZipファイルを開く
+     * 最適化用にZipファイルを開く（高速化版）
      */
     private fun openZipFileForOptimization(zipUri: Uri, zipFile: File?) {
         try {
@@ -315,21 +332,34 @@ class DirectZipImageHandler(private val context: Context) {
             
             if (!actualZipFile.exists()) return
             
+            println("DEBUG: Opening ZIP for optimization: ${actualZipFile.name}")
+            
             currentOpenZipFile = ZipFile(actualZipFile)
             currentOpenZipUri = zipUri
             
-            // エントリマップを作成
+            // エントリマップを効率的に作成（必要最小限）
             val entryMap = mutableMapOf<String, ZipEntry>()
             val entries = currentOpenZipFile!!.entries()
+            var mapCount = 0
+            
             while (entries.hasMoreElements()) {
                 val entry = entries.nextElement()
-                entryMap[entry.name] = entry
+                // 画像ファイルのみをマップに追加（高速化）
+                val fileName = entry.name.substringAfterLast('/')
+                val fileExtension = fileName.substringAfterLast('.', "").lowercase()
+                if (!entry.isDirectory && fileExtension in supportedExtensions) {
+                    entryMap[entry.name] = entry
+                    mapCount++
+                }
             }
             currentZipEntryMap = entryMap
             
-            println("DEBUG: Opened ZIP for optimization: ${actualZipFile.name}")
+            println("DEBUG: ZIP optimization ready - ${mapCount} image entries mapped")
         } catch (e: Exception) {
             println("DEBUG: Failed to open ZIP for optimization: ${e.message}")
+            currentOpenZipFile = null
+            currentOpenZipUri = null
+            currentZipEntryMap = emptyMap()
         }
     }
     
@@ -349,23 +379,30 @@ class DirectZipImageHandler(private val context: Context) {
     }
     
     /**
-     * プリロードをトリガー（優先度付き）
+     * プリロードをトリガー（最適化版 - 初回表示への影響を最小化）
      */
     private fun triggerPreload(currentIndex: Int) {
         if (currentZipEntries.isEmpty()) return
         
-        val startIndex = max(0, currentIndex - preloadRange)
-        val endIndex = min(currentZipEntries.size - 1, currentIndex + preloadRange)
-        
-        for (i in startIndex..endIndex) {
-            if (i == currentIndex) continue // 現在のページはスキップ
+        // 初回表示を優先するため、少し遅延してからプリロードを開始
+        preloadScope.launch {
+            delay(200) // 200ms遅延
             
-            val entry = currentZipEntries[i]
-            if (!imageDataCache.containsKey(entry.id) && !preloadingPages.containsKey(i)) {
-                // 距離に基づく優先度設定（近いページほど高優先度）
-                val priority = preloadRange - kotlin.math.abs(i - currentIndex)
+            val startIndex = max(0, currentIndex - preloadRange)
+            val endIndex = min(currentZipEntries.size - 1, currentIndex + preloadRange)
+            
+            println("DEBUG: Starting preload for range $startIndex to $endIndex (current: $currentIndex)")
+            
+            for (i in startIndex..endIndex) {
+                if (i == currentIndex) continue // 現在のページはスキップ
                 
-                preloadScope.launch {
+                val entry = currentZipEntries[i]
+                if (!imageDataCache.containsKey(entry.id) && !preloadingPages.containsKey(i)) {
+                    // 距離に基づく優先度設定（近いページほど高優先度）
+                    val priority = preloadRange - kotlin.math.abs(i - currentIndex)
+                    
+                    // 少し間隔を空けてプリロード（CPUの負荷を分散）
+                    delay(50)
                     preloadChannel.send(PreloadRequest(entry, priority))
                 }
             }
@@ -416,20 +453,27 @@ class DirectZipImageHandler(private val context: Context) {
     }
     
     /**
-     * パフォーマンスメトリクスの更新
+     * パフォーマンスメトリクスの更新（軽量化版）
      */
     private fun updateMetrics(loadTime: Long, isHit: Boolean = false, isPreload: Boolean = false) {
-        val currentMetrics = _performanceMetrics.value
-        val newTotalRequests = currentMetrics.totalRequests + 1
-        val newHits = if (isHit) newTotalRequests * currentMetrics.cacheHitRate + 1 else newTotalRequests * currentMetrics.cacheHitRate
-        val newPreloadedImages = if (isPreload) currentMetrics.preloadedImages + 1 else currentMetrics.preloadedImages
-        
-        _performanceMetrics.value = currentMetrics.copy(
-            cacheHitRate = newHits / newTotalRequests,
-            averageLoadTime = (currentMetrics.averageLoadTime + loadTime) / 2,
-            preloadedImages = newPreloadedImages,
-            totalRequests = newTotalRequests
-        )
+        // メトリクス更新をバックグラウンドで実行（メインスレッドの負荷軽減）
+        preloadScope.launch {
+            try {
+                val currentMetrics = _performanceMetrics.value
+                val newTotalRequests = currentMetrics.totalRequests + 1
+                val newHits = if (isHit) newTotalRequests * currentMetrics.cacheHitRate + 1 else newTotalRequests * currentMetrics.cacheHitRate
+                val newPreloadedImages = if (isPreload) currentMetrics.preloadedImages + 1 else currentMetrics.preloadedImages
+                
+                _performanceMetrics.value = currentMetrics.copy(
+                    cacheHitRate = newHits / newTotalRequests,
+                    averageLoadTime = (currentMetrics.averageLoadTime + loadTime) / 2,
+                    preloadedImages = newPreloadedImages,
+                    totalRequests = newTotalRequests
+                )
+            } catch (e: Exception) {
+                // メトリクス更新エラーは無視（パフォーマンス優先）
+            }
+        }
     }
     
     /**

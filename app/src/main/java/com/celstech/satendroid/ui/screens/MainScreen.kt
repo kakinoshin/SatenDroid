@@ -102,27 +102,24 @@ fun MainScreen() {
             // 1. 既存のZipファイルを閉じる
             directZipHandler.closeCurrentZipFile()
             
-            // 2. ファイルを開いて画像エントリを取得
+            // 2. ファイルを開いて画像エントリを取得（バックグラウンドで実行）
             val imageEntryList = directZipHandler.getImageEntriesFromZip(zipUri, zipFile)
             if (imageEntryList.isEmpty()) {
                 println("DEBUG: No images found in ZIP")
                 return null
             }
             
-            // 3. Zipファイルを開いたままにする（最適化のポイント）
-            // DirectZipImageHandlerが内部でZipファイルを準備する
-            
-            // 4. 前回の状態を取得
+            // 3. 前回の状態を取得
             val savedPosition = directZipHandler.getSavedPosition(zipUri, zipFile) ?: 0
             val validPosition = savedPosition.coerceIn(0, imageEntryList.size - 1)
             println("DEBUG: Saved position: $savedPosition, Valid position: $validPosition")
             
-            // 5. ファイルナビゲーション情報を取得
+            // 4. ファイルナビゲーション情報を取得
             val navigationInfo = if (zipFile != null) {
                 fileNavigationManager.getNavigationInfo(zipFile)
             } else null
             
-            // 6. 統合状態を作成（該当するイメージ表示の準備完了）
+            // 5. 統合状態を作成（該当するイメージ表示の準備完了）
             val result = ImageViewerState(
                 imageEntries = imageEntryList,
                 currentZipUri = zipUri,
