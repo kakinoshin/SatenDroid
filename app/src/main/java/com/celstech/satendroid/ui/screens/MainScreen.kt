@@ -142,7 +142,7 @@ fun MainScreen() {
                 pendingRequest?.let { currentRequest ->
                     coroutineScope.launch {
                         try {
-                            println("DEBUG: Opening ZIP file (state machine): ${currentRequest.second?.name ?: currentRequest.first}")
+                            println("DEBUG: Opening ZIP file (state machine): ${currentRequest.file?.name ?: currentRequest.uri}")
                             
                             // タイムアウト処理を追加
                             val timeoutJob = launch {
@@ -155,7 +155,7 @@ fun MainScreen() {
                                 )
                             }
                             
-                            val imageEntryList = directZipHandler.getImageEntriesFromZip(currentRequest.first, currentRequest.second)
+                            val imageEntryList = directZipHandler.getImageEntriesFromZip(currentRequest.uri, currentRequest.file)
                             
                             // タイムアウトジョブをキャンセル
                             timeoutJob.cancel()
@@ -164,22 +164,29 @@ fun MainScreen() {
                                 println("DEBUG: No images found in ZIP")
                                 null
                             } else {
-                                val savedPosition = directZipHandler.getSavedPosition(currentRequest.first, currentRequest.second) ?: 0
-                                val validPosition = savedPosition.coerceIn(0, imageEntryList.size - 1)
-                                println("DEBUG: Saved position: $savedPosition, Valid position: $validPosition")
+                                // 次のファイルの場合は1ページ目から、それ以外は保存された位置から
+                                val initialPage = if (currentRequest.isNextFile) {
+                                    println("DEBUG: Next file navigation - starting from page 1")
+                                    0
+                                } else {
+                                    val savedPosition = directZipHandler.getSavedPosition(currentRequest.uri, currentRequest.file) ?: 0
+                                    val validPosition = savedPosition.coerceIn(0, imageEntryList.size - 1)
+                                    println("DEBUG: Saved position: $savedPosition, Valid position: $validPosition")
+                                    validPosition
+                                }
                                 
-                                val navigationInfo = currentRequest.second?.let { file ->
+                                val navigationInfo = currentRequest.file?.let { file ->
                                     fileNavigationManager.getNavigationInfo(file)
                                 }
                                 
                                 ImageViewerState(
                                     imageEntries = imageEntryList,
-                                    currentZipUri = currentRequest.first,
-                                    currentZipFile = currentRequest.second,
+                                    currentZipUri = currentRequest.uri,
+                                    currentZipFile = currentRequest.file,
                                     fileNavigationInfo = navigationInfo,
-                                    initialPage = validPosition
+                                    initialPage = initialPage
                                 ).also {
-                                    println("DEBUG: ZIP file opened successfully - ${imageEntryList.size} images, initial page: $validPosition")
+                                    println("DEBUG: ZIP file opened successfully - ${imageEntryList.size} images, initial page: $initialPage")
                                 }
                             }
                             
@@ -234,8 +241,8 @@ fun MainScreen() {
     }
 
     // ファイルナビゲーション処理（State Machine対応版）
-    fun navigateToZipFile(newZipFile: File) {
-        println("DEBUG: Starting navigation to new file: ${newZipFile.name}")
+    fun navigateToZipFile(newZipFile: File, isNextFile: Boolean = false) {
+        println("DEBUG: Starting navigation to new file: ${newZipFile.name} (isNextFile: $isNextFile)")
         
         // 現在のジョブをキャンセル
         currentLoadingJob?.cancel()
@@ -251,7 +258,8 @@ fun MainScreen() {
                 val success = stateMachine.processAction(
                     FileLoadingStateMachine.LoadingAction.StartLoading(
                         Uri.fromFile(newZipFile), 
-                        newZipFile
+                        newZipFile,
+                        isNextFile
                     )
                 )
                 
@@ -266,7 +274,8 @@ fun MainScreen() {
                     val retrySuccess = stateMachine.processAction(
                         FileLoadingStateMachine.LoadingAction.StartLoading(
                             Uri.fromFile(newZipFile), 
-                            newZipFile
+                            newZipFile,
+                            isNextFile
                         )
                     )
                     
@@ -294,7 +303,7 @@ fun MainScreen() {
             try {
                 println("DEBUG: Starting state machine action for file loading")
                 val success = stateMachine.processAction(
-                    FileLoadingStateMachine.LoadingAction.StartLoading(uri, file)
+                    FileLoadingStateMachine.LoadingAction.StartLoading(uri, file, isNextFile = false)
                 )
                 
                 if (!success) {
@@ -306,7 +315,7 @@ fun MainScreen() {
                     // リセット後に再実行
                     kotlinx.coroutines.delay(50)
                     val retrySuccess = stateMachine.processAction(
-                        FileLoadingStateMachine.LoadingAction.StartLoading(uri, file)
+                        FileLoadingStateMachine.LoadingAction.StartLoading(uri, file, isNextFile = false)
                     )
                     
                     if (!retrySuccess) {
@@ -525,7 +534,7 @@ fun MainScreen() {
                         // 次のファイルがあるか確認してからナビゲーション
                         state.fileNavigationInfo?.nextFile?.let { nextFile ->
                             println("DEBUG: Navigating to next file: ${nextFile.name}")
-                            navigateToZipFile(nextFile)
+                            navigateToZipFile(nextFile, isNextFile = true)
                         } ?: run {
                             println("DEBUG: No next file available")
                         }

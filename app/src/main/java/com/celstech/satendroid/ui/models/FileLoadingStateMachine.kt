@@ -13,6 +13,8 @@ import java.io.File
  */
 class FileLoadingStateMachine {
     
+    data class PendingRequest(val uri: Uri, val file: File?, val isNextFile: Boolean)
+    
     sealed class LoadingState {
         object Idle : LoadingState()
         object StoppingUI : LoadingState()
@@ -23,7 +25,7 @@ class FileLoadingStateMachine {
     }
     
     sealed class LoadingAction {
-        data class StartLoading(val uri: Uri, val file: File?) : LoadingAction()
+        data class StartLoading(val uri: Uri, val file: File?, val isNextFile: Boolean = false) : LoadingAction()
         object UIStoppedComplete : LoadingAction()
         object ResourcesClearedComplete : LoadingAction()
         data class FilePreparationComplete(val state: ImageViewerState?) : LoadingAction()
@@ -34,8 +36,8 @@ class FileLoadingStateMachine {
     private val _currentState = MutableStateFlow<LoadingState>(LoadingState.Idle)
     val currentState: StateFlow<LoadingState> = _currentState.asStateFlow()
     
-    private val _pendingRequest = MutableStateFlow<Pair<Uri, File?>?>(null)
-    val pendingRequest: StateFlow<Pair<Uri, File?>?> = _pendingRequest.asStateFlow()
+    private val _pendingRequest = MutableStateFlow<PendingRequest?>(null)
+    val pendingRequest: StateFlow<PendingRequest?> = _pendingRequest.asStateFlow()
     
     /**
      * アクションを処理して状態遷移を実行
@@ -47,7 +49,7 @@ class FileLoadingStateMachine {
             is LoadingAction.StartLoading -> {
                 when (currentState) {
                     is LoadingState.Idle -> {
-                        _pendingRequest.value = action.uri to action.file
+                        _pendingRequest.value = PendingRequest(action.uri, action.file, action.isNextFile)
                         _currentState.value = LoadingState.StoppingUI
                         true
                     }
