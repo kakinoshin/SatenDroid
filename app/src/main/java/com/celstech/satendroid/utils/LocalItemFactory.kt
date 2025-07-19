@@ -99,8 +99,10 @@ class LocalItemFactory(private val context: Context) {
             java.util.zip.ZipFile(file).use { zipFile ->
                 zipFile.entries().asSequence()
                     .filter { entry ->
-                        !entry.isDirectory && 
-                        entry.name.substringAfterLast('.', "").lowercase() in imageExtensions
+                        if (entry.isDirectory) return@filter false
+                        val fileName = entry.name.substringAfterLast('/')
+                        val fileExtension = fileName.substringAfterLast('.', "").lowercase()
+                        fileExtension in imageExtensions
                     }
                     .count()
             }
