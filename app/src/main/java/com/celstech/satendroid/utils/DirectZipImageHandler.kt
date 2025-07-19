@@ -18,7 +18,7 @@ import kotlin.math.min
 
 /**
  * 高速化されたZIPファイル直接読み取りハンドラー
- * パフォーマンス最適化版
+ * パフォーマンス最適化版 - 完全同期化対応
  */
 class DirectZipImageHandler(private val context: Context) {
     private val cacheManager = ImageCacheManager(context)
@@ -41,9 +41,15 @@ class DirectZipImageHandler(private val context: Context) {
     // ZIP エントリキャッシュ（ファイル全体の読み込み回避）
     private val zipEntryCache = ConcurrentHashMap<String, ZipEntryData>()
     
-    // 最適化: Zipファイルを開いたまま保持
+    // ZipFile操作用の専用ロック（完全同期化）
+    private val zipFileLock = Any()
+    
+    // 最適化: Zipファイルを開いたまま保持（同期化対象）
+    @Volatile
     private var currentOpenZipFile: ZipFile? = null
+    @Volatile
     private var currentOpenZipUri: Uri? = null
+    @Volatile
     private var currentZipEntryMap: Map<String, ZipEntry> = emptyMap()
     
     // キャッシュサイズ制限
@@ -258,11 +264,11 @@ class DirectZipImageHandler(private val context: Context) {
     }
     
     /**
-     * ZIPファイルから直接画像を読み込み（最適化版）
+     * ZIPファイルから直接画像を読み込み（完全同期化版）
      */
     private suspend fun loadImageFromZip(imageEntry: ZipImageEntry): ByteArray? = withContext(Dispatchers.IO) {
         try {
-            // 最適化: 同じZipファイルなら開いたまま使用
+            // 最適化: 同じZipファイルなら開いたまま使用（同期化済み）
             val optimizedResult = tryOptimizedRead(imageEntry)
             if (optimizedResult != null) {
                 return@withContext optimizedResult
@@ -284,6 +290,7 @@ class DirectZipImageHandler(private val context: Context) {
                 }
             }
         } catch (e: IOException) {
+            println("DEBUG: loadImageFromZip failed for ${imageEntry.fileName}: ${e.message}")
             e.printStackTrace()
         }
         
@@ -291,36 +298,59 @@ class DirectZipImageHandler(private val context: Context) {
     }
     
     /**
-     * 最適化された読み込みを試行
+     * 最適化された読み込みを試行（完全同期化版）
      */
-    @Synchronized
     private fun tryOptimizedRead(imageEntry: ZipImageEntry): ByteArray? {
-        return try {
-            // 同じZipファイルでない場合は新しく開く
-            if (currentOpenZipFile == null || currentOpenZipUri != imageEntry.zipUri) {
-                openZipFileForOptimization(imageEntry.zipUri, imageEntry.zipFile)
+        return synchronized(zipFileLock) {
+            try {
+                // 同じZipファイルでない場合は新しく開く
+                if (currentOpenZipFile == null || currentOpenZipUri != imageEntry.zipUri) {
+                    openZipFileForOptimizationInternal(imageEntry.zipUri, imageEntry.zipFile)
+                }
+                
+                // 開いているZipファイルから直接読み取り
+                val zipFile = currentOpenZipFile
+                val zipEntry = currentZipEntryMap[imageEntry.entryName]
+                
+                if (zipFile == null || zipEntry == null) {
+                    println("DEBUG: Optimized read failed - zipFile or zipEntry is null")
+                    return null
+                }
+                
+                // ZipFileの状態を再確認（クローズされていないか）
+                if (zipFile.name == null) {
+                    println("DEBUG: ZipFile appears to be closed")
+                    currentOpenZipFile = null
+                    currentOpenZipUri = null
+                    currentZipEntryMap = emptyMap()
+                    return null
+                }
+                
+                zipFile.getInputStream(zipEntry)?.use { inputStream ->
+                    inputStream.readBytes()
+                }
+            } catch (e: Exception) {
+                println("DEBUG: Optimized read failed: ${e.message}")
+                // エラー時は状態をクリアして再試行の機会を提供
+                currentOpenZipFile = null
+                currentOpenZipUri = null
+                currentZipEntryMap = emptyMap()
+                null
             }
-            
-            // 開いているZipファイルから直接読み取り
-            val zipFile = currentOpenZipFile ?: return null
-            val zipEntry = currentZipEntryMap[imageEntry.entryName] ?: return null
-            
-            zipFile.getInputStream(zipEntry)?.use { inputStream ->
-                inputStream.readBytes()
-            }
-        } catch (e: Exception) {
-            println("DEBUG: Optimized read failed: ${e.message}")
-            null
         }
     }
     
     /**
-     * 最適化用にZipファイルを開く（高速化版）
+     * 最適化用にZipファイルを開く（完全同期化版・内部用）
      */
-    private fun openZipFileForOptimization(zipUri: Uri, zipFile: File?) {
+    private fun openZipFileForOptimizationInternal(zipUri: Uri, zipFile: File?) {
+        // この関数は既にzipFileLockで保護された状態で呼ばれる
         try {
-            // 古いファイルを閉じる
+            // 古いファイルを安全に閉じる
             currentOpenZipFile?.close()
+            currentOpenZipFile = null
+            currentOpenZipUri = null
+            currentZipEntryMap = emptyMap()
             
             val actualZipFile = zipFile ?: run {
                 if (zipUri.scheme == "file") {
@@ -330,16 +360,18 @@ class DirectZipImageHandler(private val context: Context) {
                 }
             }
             
-            if (!actualZipFile.exists()) return
+            if (!actualZipFile.exists()) {
+                println("DEBUG: ZIP file does not exist: ${actualZipFile.path}")
+                return
+            }
             
             println("DEBUG: Opening ZIP for optimization: ${actualZipFile.name}")
             
-            currentOpenZipFile = ZipFile(actualZipFile)
-            currentOpenZipUri = zipUri
+            val newZipFile = ZipFile(actualZipFile)
             
             // エントリマップを効率的に作成（必要最小限）
             val entryMap = mutableMapOf<String, ZipEntry>()
-            val entries = currentOpenZipFile!!.entries()
+            val entries = newZipFile.entries()
             var mapCount = 0
             
             while (entries.hasMoreElements()) {
@@ -352,11 +384,21 @@ class DirectZipImageHandler(private val context: Context) {
                     mapCount++
                 }
             }
+            
+            // 正常に処理が完了してから状態を更新
+            currentOpenZipFile = newZipFile
+            currentOpenZipUri = zipUri
             currentZipEntryMap = entryMap
             
             println("DEBUG: ZIP optimization ready - ${mapCount} image entries mapped")
         } catch (e: Exception) {
             println("DEBUG: Failed to open ZIP for optimization: ${e.message}")
+            // エラー時は状態を確実にクリア
+            try {
+                currentOpenZipFile?.close()
+            } catch (closeException: Exception) {
+                println("DEBUG: Error closing ZIP file during error cleanup: ${closeException.message}")
+            }
             currentOpenZipFile = null
             currentOpenZipUri = null
             currentZipEntryMap = emptyMap()
@@ -364,17 +406,22 @@ class DirectZipImageHandler(private val context: Context) {
     }
     
     /**
-     * 現在のZipファイルを閉じる
+     * 現在のZipファイルを閉じる（完全同期化版）
      */
     fun closeCurrentZipFile() {
-        try {
-            currentOpenZipFile?.close()
-            currentOpenZipFile = null
-            currentOpenZipUri = null
-            currentZipEntryMap = emptyMap()
-            println("DEBUG: Closed current ZIP file")
-        } catch (e: Exception) {
-            println("DEBUG: Error closing ZIP file: ${e.message}")
+        synchronized(zipFileLock) {
+            try {
+                currentOpenZipFile?.close()
+                println("DEBUG: Successfully closed current ZIP file")
+            } catch (e: Exception) {
+                println("DEBUG: Error closing ZIP file: ${e.message}")
+            } finally {
+                // 状態を確実にクリア
+                currentOpenZipFile = null
+                currentOpenZipUri = null
+                currentZipEntryMap = emptyMap()
+                println("DEBUG: ZIP file state cleared")
+            }
         }
     }
     
@@ -484,22 +531,46 @@ class DirectZipImageHandler(private val context: Context) {
     }
     
     /**
-     * メモリキャッシュをクリア
+     * メモリキャッシュをクリア（同期化強化版）
      */
     fun clearMemoryCache() {
         imageDataCache.clear()
         zipEntryCache.clear()
         preloadingPages.clear()
+        
+        // ZipFile状態の確認も同期化
+        synchronized(zipFileLock) {
+            // ZipFileは閉じずに状態だけログ出力
+            if (currentOpenZipFile != null) {
+                println("DEBUG: Memory cleared - ZIP file remains open for optimization")
+            }
+        }
+        
         System.gc()
     }
     
     /**
-     * リソースのクリーンアップ
+     * リソースのクリーンアップ（完全同期化版）
      */
     fun cleanup() {
-        closeCurrentZipFile()
+        // ZipFileを安全に閉じる
+        synchronized(zipFileLock) {
+            try {
+                currentOpenZipFile?.close()
+                println("DEBUG: Cleanup - ZIP file closed")
+            } catch (e: Exception) {
+                println("DEBUG: Cleanup - Error closing ZIP file: ${e.message}")
+            } finally {
+                currentOpenZipFile = null
+                currentOpenZipUri = null
+                currentZipEntryMap = emptyMap()
+            }
+        }
+        
+        // その他のリソースをクリア
         preloadScope.cancel()
         clearMemoryCache()
+        println("DEBUG: DirectZipImageHandler cleanup completed")
     }
     
     // 既存メソッドのデリゲート
@@ -530,9 +601,20 @@ class DirectZipImageHandler(private val context: Context) {
         imageDataCache.keys.removeAll { it.startsWith(fileId) }
         zipEntryCache.remove(fileId)
         
-        // 削除されたファイルが現在開いているファイルの場合は閉じる
-        if (currentOpenZipUri == zipUri) {
-            closeCurrentZipFile()
+        // 削除されたファイルが現在開いているファイルの場合は安全に閉じる（同期化）
+        synchronized(zipFileLock) {
+            if (currentOpenZipUri == zipUri) {
+                try {
+                    currentOpenZipFile?.close()
+                    println("DEBUG: Closed deleted ZIP file: ${zipFile?.name ?: zipUri}")
+                } catch (e: Exception) {
+                    println("DEBUG: Error closing deleted ZIP file: ${e.message}")
+                } finally {
+                    currentOpenZipFile = null
+                    currentOpenZipUri = null
+                    currentZipEntryMap = emptyMap()
+                }
+            }
         }
     }
     
