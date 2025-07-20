@@ -93,23 +93,44 @@ fun MainScreen() {
         currentImageViewerState?.imageEntries?.size ?: 0 
     }
 
-    // ファイルが変更されたときに保存されたページに移動
-    LaunchedEffect(currentImageViewerState?.fileId, currentImageViewerState?.imageEntries?.size) {
-        val state = currentImageViewerState
-        if (state != null && state.imageEntries.isNotEmpty() && !stateMachine.isLoading()) {
+    // 安定した依存関係のためのキー管理
+    val currentFileId = remember(currentImageViewerState) { 
+        currentImageViewerState?.fileId 
+    }
+    val isImageViewerReady = remember(currentImageViewerState, stateMachine.isLoading()) {
+        currentImageViewerState != null && 
+        currentImageViewerState.imageEntries.isNotEmpty() && 
+        !stateMachine.isLoading()
+    }
+
+    // ページ保存用のデバウンス処理
+    var lastSavedPage by remember { mutableStateOf(-1) }
+    var lastSavedFileId by remember { mutableStateOf<String?>(null) }
+
+    // ファイルが変更されたときに保存されたページに移動（最適化版）
+    LaunchedEffect(currentFileId) {
+        // ファイルIDが変更された場合のみ実行
+        if (currentFileId != null && isImageViewerReady) {
+            val state = currentImageViewerState ?: return@LaunchedEffect
+            
+            // 重複実行を防ぐ
+            if (lastSavedFileId == currentFileId) {
+                println("DEBUG: Skipping page navigation - already processed for file: $currentFileId")
+                return@LaunchedEffect
+            }
+            
             val targetPage = state.initialPage.coerceIn(0, state.imageEntries.size - 1)
-            println("DEBUG: Moving to saved position: $targetPage for file: ${state.fileId} (total: ${state.imageEntries.size})")
+            println("DEBUG: Moving to saved position: $targetPage for file: $currentFileId (total: ${state.imageEntries.size})")
             
             if (pagerState.currentPage != targetPage && pagerState.pageCount == state.imageEntries.size) {
                 try {
                     pagerState.scrollToPage(targetPage)
+                    lastSavedFileId = currentFileId
                     println("DEBUG: Successfully moved to page $targetPage")
                 } catch (e: Exception) {
                     println("ERROR: Failed to scroll to page $targetPage: ${e.message}")
                 }
             }
-        } else if (state != null) {
-            println("DEBUG: Skipping page move - loading: ${stateMachine.isLoading()}, entries: ${state.imageEntries.size}")
         }
     }
 
@@ -189,21 +210,29 @@ fun MainScreen() {
         }
     }
 
-    // State Machine状態変化の監視と処理
+    // State Machine状態変化の監視と処理（最適化版）
     LaunchedEffect(loadingState) {
-        when (val state = loadingState) {
+        // 状態変化時のみ実行し、重複処理を防ぐ
+        val currentState = loadingState
+        println("DEBUG: State Machine transition to: ${currentState::class.simpleName}")
+        
+        when (currentState) {
             is FileLoadingStateMachine.LoadingState.StoppingUI -> {
                 println("DEBUG: State Machine - UI Stopping")
+                // UI停止は即座に実行
                 stateMachine.processAction(FileLoadingStateMachine.LoadingAction.UIStoppedComplete)
             }
             
             is FileLoadingStateMachine.LoadingState.CleaningResources -> {
                 println("DEBUG: State Machine - Cleaning Resources")
+                // リソースクリーニングは一度だけ実行
                 mainScope.launch {
                     try {
                         println("DEBUG: Clearing memory resources")
-                        directZipHandler.clearMemoryCache()
-                        directZipHandler.closeCurrentZipFile()
+                        withContext(Dispatchers.IO) {
+                            directZipHandler.clearMemoryCache()
+                            directZipHandler.closeCurrentZipFile()
+                        }
                         println("DEBUG: Resources cleaned successfully")
                         
                         stateMachine.processAction(FileLoadingStateMachine.LoadingAction.ResourcesClearedComplete)
@@ -220,6 +249,10 @@ fun MainScreen() {
             is FileLoadingStateMachine.LoadingState.PreparingFile -> {
                 println("DEBUG: State Machine - Preparing File")
                 pendingRequest?.let { currentRequest ->
+                    // 同じリクエストの重複実行を防ぐ
+                    val requestKey = "${currentRequest.uri}_${currentRequest.file?.name}_${currentRequest.isNextFile}"
+                    println("DEBUG: Processing request: $requestKey")
+                    
                     mainScope.launch {
                         try {
                             println("DEBUG: Opening ZIP file (state machine): ${currentRequest.file?.name ?: currentRequest.uri}")
@@ -269,7 +302,7 @@ fun MainScreen() {
                             // タイムアウト処理も子コルーチンとして管理
                             val timeoutJob = launch {
                                 kotlinx.coroutines.delay(30000) // 30秒でタイムアウト
-                                println("ERROR: File preparation timeout")
+                                println("ERROR: File preparation timeout for request: $requestKey")
                                 preparationJob.cancel() // 準備ジョブをキャンセル
                                 stateMachine.processAction(
                                     FileLoadingStateMachine.LoadingAction.FilePreparationFailed(
@@ -310,21 +343,21 @@ fun MainScreen() {
             }
             
             is FileLoadingStateMachine.LoadingState.Error -> {
-                println("DEBUG: State Machine - Error: ${state.message}")
-                state.throwable?.printStackTrace()
+                println("DEBUG: State Machine - Error: ${currentState.message}")
+                currentState.throwable?.printStackTrace()
                 
-                // エラー時の自動クリーンアップ
+                // エラー時の自動クリーンアップ（一度だけ実行）
                 try {
                     println("DEBUG: Performing automatic cleanup due to error")
                     clearAllStateAndMemory()
                     
                     // エラーが重大な場合は緊急クリーンアップ
-                    val errorMessage = state.message.lowercase()
+                    val errorMessage = currentState.message.lowercase()
                     if (errorMessage.contains("memory") || 
                         errorMessage.contains("timeout") || 
                         errorMessage.contains("crash")) {
                         println("WARNING: Critical error detected, performing emergency cleanup")
-                        emergencyCleanup("Critical error: ${state.message}")
+                        emergencyCleanup("Critical error: ${currentState.message}")
                     }
                 } catch (cleanupError: Exception) {
                     println("ERROR: Cleanup during error handling failed: ${cleanupError.message}")
@@ -336,6 +369,7 @@ fun MainScreen() {
             }
             
             is FileLoadingStateMachine.LoadingState.Idle -> {
+                // Idle状態では何もしない（ログのみ）
                 println("DEBUG: State Machine - Idle")
             }
         }
@@ -535,29 +569,75 @@ fun MainScreen() {
         }
     }
 
-    // 現在の位置を保存（重複実行防止）
-    LaunchedEffect(pagerState.currentPage, currentImageViewerState?.fileId) {
+    // 現在の位置を保存（デバウンス処理付き最適化版）
+    LaunchedEffect(pagerState.currentPage, currentFileId) {
+        // 有効な状態でのみ実行
         val state = currentImageViewerState
-        if (state != null && pagerState.currentPage >= 0) {
-            // ナビゲーション中でない場合のみ保存
-            if (!stateMachine.isLoading()) {
-                println("DEBUG: Saving position ${pagerState.currentPage} for file: ${state.fileId}")
-                directZipHandler.saveCurrentPosition(
-                    state.currentZipUri,
-                    pagerState.currentPage,
-                    state.currentZipFile
-                )
+        val currentPage = pagerState.currentPage
+        
+        if (state != null && currentPage >= 0 && currentFileId != null) {
+            // 重複保存を防ぐ
+            if (lastSavedPage == currentPage && lastSavedFileId == currentFileId) {
+                return@LaunchedEffect
+            }
+            
+            // ローディング中は保存をスキップ
+            if (stateMachine.isLoading()) {
+                println("DEBUG: Skipping position save during loading - Page: $currentPage, File: $currentFileId")
+                return@LaunchedEffect
+            }
+            
+            // デバウンス処理: 500ms待ってから保存
+            kotlinx.coroutines.delay(500)
+            
+            // デバウンス後に再度状態チェック（状態が変更されていないことを確認）
+            val finalState = currentImageViewerState
+            val finalPage = pagerState.currentPage
+            
+            // デバウンス期間中に状態やページが変更されていないかチェック
+            if (finalState != null &&
+                finalState.fileId == currentFileId &&
+                finalPage >= 0 &&
+                finalPage < finalState.imageEntries.size &&
+                !stateMachine.isLoading()) {
+                
+                println("DEBUG: Saving position $finalPage for file: $currentFileId")
+                
+                try {
+                    directZipHandler.saveCurrentPosition(
+                        finalState.currentZipUri,
+                        finalPage,
+                        finalState.currentZipFile
+                    )
+                    
+                    // 保存成功後に記録を更新
+                    lastSavedPage = finalPage
+                    lastSavedFileId = currentFileId
+                    
+                } catch (e: Exception) {
+                    println("ERROR: Failed to save position: ${e.message}")
+                }
             } else {
-                println("DEBUG: Skipping position save during loading")
+                println("DEBUG: Position save cancelled - State changed during debounce period")
             }
         }
     }
 
-    // Auto-hide top bar (UIタイマー - ユーザビリティのため維持)
-    LaunchedEffect(showTopBar) {
-        if (showTopBar && currentImageViewerState != null) {
-            kotlinx.coroutines.delay(3000) // UIタイマー：3秒後に自動でトップバーを隠す
-            showTopBar = false
+    // Auto-hide top bar（最適化版 - 条件付き実行）
+    LaunchedEffect(showTopBar, currentFileId) {
+        // トップバーが表示され、かつ画像ビューアが有効な場合のみタイマー開始
+        if (showTopBar && currentFileId != null && isImageViewerReady) {
+            println("DEBUG: Starting top bar auto-hide timer for file: $currentFileId")
+            
+            kotlinx.coroutines.delay(3000) // 3秒後に自動でトップバーを隠す
+            
+            // タイマー完了後に状態を再確認
+            if (showTopBar && currentImageViewerState?.fileId == currentFileId) {
+                showTopBar = false
+                println("DEBUG: Top bar auto-hidden after timer")
+            } else {
+                println("DEBUG: Top bar auto-hide cancelled due to state change")
+            }
         }
     }
 
@@ -837,16 +917,26 @@ fun MainScreen() {
         }
     }
 
-    // 画面遷移のハンドリング
+    // 画面遷移のハンドリング（最適化版）
     when (currentView) {
         is ViewState.LocalFileList -> {
-            LaunchedEffect(currentView) {
+            // ファイルリスト画面への遷移時のみ実行
+            LaunchedEffect(Unit) {
                 println("DEBUG: Returned to file list - resetting state machine")
-                stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
-                directZipHandler.closeCurrentZipFile()
-                // 前の画面から戻った時の状態をクリア
-                lastReadingProgress = null
-                fileCompletionUpdate = null
+                try {
+                    stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+                    directZipHandler.closeCurrentZipFile()
+                    
+                    // 前の画面から戻った時の状態をクリア
+                    lastReadingProgress = null
+                    fileCompletionUpdate = null
+                    lastSavedPage = -1
+                    lastSavedFileId = null
+                    
+                    println("DEBUG: File list state cleanup completed")
+                } catch (e: Exception) {
+                    println("ERROR: File list cleanup failed: ${e.message}")
+                }
             }
             
             FileSelectionScreen(
@@ -1007,10 +1097,16 @@ fun MainScreen() {
         }
 
         is ViewState.DropboxBrowser -> {
-            LaunchedEffect(currentView) {
+            // Dropbox画面への遷移時のみ実行
+            LaunchedEffect(Unit) {
                 println("DEBUG: Moved to Dropbox browser - resetting state machine")
-                stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
-                directZipHandler.closeCurrentZipFile()
+                try {
+                    stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+                    directZipHandler.closeCurrentZipFile()
+                    println("DEBUG: Dropbox browser state cleanup completed")
+                } catch (e: Exception) {
+                    println("ERROR: Dropbox browser cleanup failed: ${e.message}")
+                }
             }
             
             DropboxScreen(
@@ -1025,10 +1121,16 @@ fun MainScreen() {
         }
 
         is ViewState.Settings -> {
-            LaunchedEffect(currentView) {
+            // 設定画面への遷移時のみ実行
+            LaunchedEffect(Unit) {
                 println("DEBUG: Moved to Settings - resetting state machine")
-                stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
-                directZipHandler.closeCurrentZipFile()
+                try {
+                    stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+                    directZipHandler.closeCurrentZipFile()
+                    println("DEBUG: Settings state cleanup completed")
+                } catch (e: Exception) {
+                    println("ERROR: Settings cleanup failed: ${e.message}")
+                }
             }
             
             SettingsScreenNew(
