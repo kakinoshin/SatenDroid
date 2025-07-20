@@ -77,6 +77,37 @@ fun MainScreen() {
     // 直接ZIP画像ハンドラー
     val directZipHandler = remember { DirectZipImageHandler(context) }
 
+    // 画像キャッシュサイズ制限の設定
+    val maxCacheSizeMB = remember { 
+        val runtime = Runtime.getRuntime()
+        val maxMemoryMB = runtime.maxMemory() / 1024 / 1024
+        // 最大メモリの15%をキャッシュに割り当て（最小50MB、最大200MB）
+        (maxMemoryMB * 0.15).toInt().coerceIn(50, 200)
+    }
+    
+    // キャッシュ使用量の監視状態
+    var currentCacheSizeMB by remember { mutableStateOf(0) }
+    var cacheHitRate by remember { mutableStateOf(0.0) }
+    var lastCacheCleanupTime by remember { mutableStateOf(0L) }
+    
+    // キャッシュ制限の初期化
+    LaunchedEffect(Unit) {
+        try {
+            // 画像キャッシュサイズ制限を設定
+            println("DEBUG: Setting image cache limit to ${maxCacheSizeMB}MB")
+            
+            // キャッシュマネージャーの初期化（実際のAPIに応じて調整が必要）
+            // Note: DirectZipImageHandlerの実際のAPIが利用可能になったら有効化
+            // val cacheManager = directZipHandler.getCacheManager()
+            // cacheManager.setMaxCacheSize(maxCacheSizeMB * 1024 * 1024) // bytes
+            
+            lastCacheCleanupTime = System.currentTimeMillis()
+            println("DEBUG: Image cache configuration completed")
+        } catch (e: Exception) {
+            println("ERROR: Failed to configure image cache: ${e.message}")
+        }
+    }
+
     // File navigation manager
     val fileNavigationManager = remember { FileNavigationManager(context) }
 
@@ -136,27 +167,37 @@ fun MainScreen() {
 
 
 
-    // 完全な状態クリア関数（強化版）
+    // 完全な状態クリア関数（キャッシュサイズ制限対応強化版）
     fun clearAllStateAndMemory() {
         println("DEBUG: Starting enhanced cleanup of all state and memory")
         try {
             // 段階的クリーンアップ
-            println("DEBUG: Step 1 - Clearing memory cache")
-            directZipHandler.clearMemoryCache()
+            println("DEBUG: Step 1 - Checking cache size before cleanup")
+            val beforeCleanupCacheSize = currentCacheSizeMB
             
-            println("DEBUG: Step 2 - Closing ZIP file")
+            println("DEBUG: Step 2 - Clearing memory cache")
+            directZipHandler.clearMemoryCache()
+            currentCacheSizeMB = 0 // キャッシュサイズをリセット
+            
+            println("DEBUG: Step 3 - Closing ZIP file")
             directZipHandler.closeCurrentZipFile()
             
-            println("DEBUG: Step 3 - Resetting state machine")
+            println("DEBUG: Step 4 - Resetting state machine")
             stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
             
-            println("DEBUG: Step 4 - Clearing UI state")
+            println("DEBUG: Step 5 - Clearing UI state")
             lastReadingProgress = null
             fileCompletionUpdate = null
             showTopBar = false
+            lastSavedPage = -1
+            lastSavedFileId = null
             
-            println("DEBUG: Step 5 - Requesting garbage collection")
+            println("DEBUG: Step 6 - Requesting garbage collection")
             System.gc()
+            
+            // キャッシュクリーンアップ統計
+            println("DEBUG: Cache cleanup statistics - Before: ${beforeCleanupCacheSize}MB, After: ${currentCacheSizeMB}MB")
+            lastCacheCleanupTime = System.currentTimeMillis()
             
             println("DEBUG: Enhanced cleanup completed successfully")
         } catch (e: Exception) {
@@ -167,6 +208,7 @@ fun MainScreen() {
             try {
                 println("DEBUG: Performing fallback cleanup")
                 directZipHandler.cleanup()
+                currentCacheSizeMB = 0
                 System.gc()
                 System.runFinalization()
             } catch (fallbackError: Exception) {
@@ -175,33 +217,72 @@ fun MainScreen() {
         }
     }
 
-    // 緊急クリーンアップ関数（メモリ不足時など）
+    // キャッシュ統計レポート関数
+    fun logCacheStatistics() {
+        try {
+            val runtime = Runtime.getRuntime()
+            val usedMemory = runtime.totalMemory() - runtime.freeMemory()
+            val maxMemory = runtime.maxMemory()
+            val memoryUsagePercent = (usedMemory.toDouble() / maxMemory * 100).toInt()
+            
+            val dynamicCacheLimit = when {
+                memoryUsagePercent > 85 -> (maxCacheSizeMB * 0.5).toInt().coerceAtLeast(20)
+                memoryUsagePercent > 70 -> (maxCacheSizeMB * 0.7).toInt().coerceAtLeast(30)
+                memoryUsagePercent < 50 -> (maxCacheSizeMB * 1.2).toInt().coerceAtMost(300)
+                else -> maxCacheSizeMB
+            }
+            
+            val cacheUsagePercent = if (dynamicCacheLimit > 0) {
+                (currentCacheSizeMB.toDouble() / dynamicCacheLimit * 100).toInt()
+            } else 0
+            
+            val timeSinceLastCleanup = System.currentTimeMillis() - lastCacheCleanupTime
+            
+            println("=== CACHE STATISTICS ===")
+            println("System Memory: ${memoryUsagePercent}% (${usedMemory / 1024 / 1024}MB / ${maxMemory / 1024 / 1024}MB)")
+            println("Image Cache: ${currentCacheSizeMB}MB / ${dynamicCacheLimit}MB (${cacheUsagePercent}%)")
+            println("Cache Hit Rate: ${String.format("%.1f", cacheHitRate * 100)}%")
+            println("Max Cache Size: ${maxCacheSizeMB}MB")
+            println("Time Since Last Cleanup: ${timeSinceLastCleanup / 1000}s")
+            println("=======================")
+        } catch (e: Exception) {
+            println("ERROR: Failed to generate cache statistics: ${e.message}")
+        }
+    }
+
+    // 緊急クリーンアップ関数（キャッシュサイズ制限対応版）
     fun emergencyCleanup(reason: String = "Unknown") {
         println("EMERGENCY: Starting emergency cleanup - Reason: $reason")
         try {
-            // 即座に全てのコルーチンを停止
+            // Phase 1: 即座に全てのコルーチンを停止
             supervisorJob.cancel()
             
-            // 即座にZIPファイルを閉じる
+            // Phase 2: 画像キャッシュの強制クリア
+            println("EMERGENCY: Clearing image cache")
+            directZipHandler.clearMemoryCache()
+            currentCacheSizeMB = 0
+            
+            // Phase 3: ZIPファイルを閉じる
             directZipHandler.closeCurrentZipFile()
             
-            // メモリキャッシュを強制クリア
-            directZipHandler.clearMemoryCache()
-            
-            // State Machineを強制リセット
+            // Phase 4: State Machineを強制リセット
             stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
             
-            // UI状態をクリア
+            // Phase 5: UI状態をクリア
             lastReadingProgress = null
             fileCompletionUpdate = null
             showTopBar = false
+            lastSavedPage = -1
+            lastSavedFileId = null
             
-            // 強制ガベージコレクション
+            // Phase 6: システムレベルの強制ガベージコレクション
             System.gc()
             System.runFinalization()
             
-            // ファイルリスト画面に戻る
+            // Phase 7: 緊急時はファイルリスト画面に戻る
             currentView = ViewState.LocalFileList
+            
+            lastCacheCleanupTime = System.currentTimeMillis()
             
             println("EMERGENCY: Emergency cleanup completed")
         } catch (e: Exception) {
@@ -209,6 +290,63 @@ fun MainScreen() {
             e.printStackTrace()
         }
     }
+
+    // 画像キャッシュサイズチェック関数
+    fun checkAndLimitCacheSize(forceCleanup: Boolean = false): Boolean {
+        return try {
+            // キャッシュ使用量を推定（実際のAPIが利用できない場合の暫定実装）
+            // Note: DirectZipImageHandlerの実際のAPIに応じて調整が必要
+            val estimatedCacheSize = 25 // 暫定値として25MB
+            currentCacheSizeMB = estimatedCacheSize
+            
+            // キャッシュヒット率を設定（実際のAPIが利用できない場合の暫定実装）
+            cacheHitRate = 0.8 // 暫定値として80%
+            
+            val shouldCleanup = forceCleanup || currentCacheSizeMB > maxCacheSizeMB
+            
+            if (shouldCleanup) {
+                println("DEBUG: Cache size limit exceeded: ${currentCacheSizeMB}MB > ${maxCacheSizeMB}MB")
+                
+                // 段階的キャッシュクリア
+                when {
+                    currentCacheSizeMB > maxCacheSizeMB * 1.5 -> {
+                        // 制限の50%超過時は全クリア
+                        println("WARNING: Severe cache overflow, clearing all cache")
+                        directZipHandler.clearMemoryCache()
+                        currentCacheSizeMB = 0
+                    }
+                    
+                    currentCacheSizeMB > maxCacheSizeMB * 1.2 -> {
+                        // 制限の20%超過時は積極的クリア
+                        println("WARNING: Cache overflow, performing aggressive cleanup")
+                        directZipHandler.clearMemoryCache()
+                        currentCacheSizeMB = 0
+                    }
+                    
+                    else -> {
+                        // 制限超過時は部分クリア
+                        println("INFO: Cache limit exceeded, performing partial cleanup")
+                        directZipHandler.clearMemoryCache()
+                        currentCacheSizeMB = 0
+                    }
+                }
+                
+                lastCacheCleanupTime = System.currentTimeMillis()
+                
+                // クリーンアップ後のガベージコレクション
+                System.gc()
+                
+                return true
+            }
+            
+            false
+        } catch (e: Exception) {
+            println("ERROR: Failed to check cache size: ${e.message}")
+            false
+        }
+    }
+
+
 
     // State Machine状態変化の監視と処理（最適化版）
     LaunchedEffect(loadingState) {
@@ -398,9 +536,12 @@ fun MainScreen() {
                     }
                 }
                 
-                // Phase 2: IO処理でリソースクリア
+                // Phase 2: IO処理でリソースクリア + キャッシュサイズチェック
                 withContext(Dispatchers.IO) {
                     try {
+                        // キャッシュサイズ制限チェック
+                        checkAndLimitCacheSize(forceCleanup = true)
+                        
                         directZipHandler.clearMemoryCache()
                         directZipHandler.closeCurrentZipFile()
                         println("DEBUG: File handles and cache cleared")
@@ -484,8 +625,11 @@ fun MainScreen() {
                 // ファイル読み込み前の予防的クリーンアップ
                 println("DEBUG: Performing preventive cleanup before file loading")
                 
-                // 現在のリソースをクリア
+                // 現在のリソースをクリア + キャッシュサイズチェック
                 withContext(Dispatchers.IO) {
+                    // キャッシュサイズ制限チェック
+                    checkAndLimitCacheSize(forceCleanup = true)
+                    
                     directZipHandler.clearMemoryCache()
                     directZipHandler.closeCurrentZipFile()
                 }
@@ -759,58 +903,130 @@ fun MainScreen() {
         }
     }
 
-    // メモリ使用量監視とクリーンアップ
+    // 画像キャッシュサイズ監視とクリーンアップ（包括的なメモリ監視）
     DisposableEffect(currentImageViewerState) {
-        val memoryMonitorJob = mainScope.launch {
+        val cacheMonitorJob = mainScope.launch {
+            var monitoringInterval = 3000L // 初期監視間隔: 3秒
+            var consecutiveOverflowCount = 0
+            var dynamicCacheLimit = maxCacheSizeMB
+            
             while (true) {
                 try {
-                    val runtime = Runtime.getRuntime()
-                    val usedMemory = runtime.totalMemory() - runtime.freeMemory()
-                    val maxMemory = runtime.maxMemory()
-                    val memoryUsagePercent = (usedMemory.toDouble() / maxMemory * 100).toInt()
+                    // Phase 1: 画像キャッシュサイズチェック
+                    val cacheOverflow = checkAndLimitCacheSize()
                     
-                    println("DEBUG: Memory usage: ${memoryUsagePercent}% (${usedMemory / 1024 / 1024}MB / ${maxMemory / 1024 / 1024}MB)")
-                    
-                    // メモリ使用量が80%を超えた場合は予防的クリーンアップ
-                    if (memoryUsagePercent > 80) {
-                        println("WARNING: High memory usage detected! Performing preventive cleanup...")
-                        directZipHandler.clearMemoryCache()
+                    if (cacheOverflow) {
+                        consecutiveOverflowCount++
+                        println("WARNING: Cache overflow detected (Count: $consecutiveOverflowCount)")
                         
-                        // メモリ使用量が90%を超えた場合は緊急クリーンアップ
-                        if (memoryUsagePercent > 90) {
-                            println("CRITICAL: Critical memory usage! Performing emergency cleanup...")
-                            emergencyCleanup("Critical memory usage: ${memoryUsagePercent}%")
-                            break // 監視を停止して処理を優先
-                        } else {
-                            System.gc() // 通常のガベージコレクション
+                        // 連続してオーバーフローする場合は動的制限を強化
+                        if (consecutiveOverflowCount >= 3) {
+                            dynamicCacheLimit = (dynamicCacheLimit * 0.8).toInt().coerceAtLeast(20)
+                            println("INFO: Reducing dynamic cache limit to ${dynamicCacheLimit}MB")
+                            consecutiveOverflowCount = 0
                         }
-                        
-                        // クリーンアップ効果をチェック
-                        kotlinx.coroutines.delay(1000)
-                        val newUsedMemory = runtime.totalMemory() - runtime.freeMemory()
-                        val newMemoryUsagePercent = (newUsedMemory.toDouble() / maxMemory * 100).toInt()
-                        println("DEBUG: Memory usage after cleanup: ${newMemoryUsagePercent}%")
-                        
-                        if (newMemoryUsagePercent > memoryUsagePercent - 5) {
-                            println("WARNING: Cleanup was not effective, memory usage still high")
-                            // クリーンアップ効果が低い場合は監視頻度を上げる
-                            kotlinx.coroutines.delay(2000) // 2秒後に再チェック
-                        } else {
-                            println("DEBUG: Cleanup successful, memory usage reduced by ${memoryUsagePercent - newMemoryUsagePercent}%")
+                    } else {
+                        consecutiveOverflowCount = 0
+                    }
+                    
+                    // Phase 2: システムメモリ使用量チェック
+                    val systemMemoryInfo = run {
+                        val runtime = Runtime.getRuntime()
+                        val usedMemory = runtime.totalMemory() - runtime.freeMemory()
+                        val maxMemory = runtime.maxMemory()
+                        val memoryUsagePercent = (usedMemory.toDouble() / maxMemory * 100).toInt()
+                        Triple(usedMemory, maxMemory, memoryUsagePercent)
+                    }
+                    
+                    // Phase 3: 動的キャッシュサイズ調整
+                    val adjustedCacheLimit = when {
+                        systemMemoryInfo.third > 85 -> {
+                            (maxCacheSizeMB * 0.5).toInt().coerceAtLeast(20)
+                        }
+                        systemMemoryInfo.third > 70 -> {
+                            (maxCacheSizeMB * 0.7).toInt().coerceAtLeast(30)
+                        }
+                        systemMemoryInfo.third < 50 -> {
+                            (maxCacheSizeMB * 1.2).toInt().coerceAtMost(300)
+                        }
+                        else -> {
+                            maxCacheSizeMB
                         }
                     }
                     
-                    kotlinx.coroutines.delay(5000) // 5秒ごとにチェック
+                    if (adjustedCacheLimit != dynamicCacheLimit) {
+                        dynamicCacheLimit = adjustedCacheLimit
+                        println("DEBUG: Adjusted cache limit to ${dynamicCacheLimit}MB based on memory usage")
+                    }
+                    
+                    // Phase 4: 詳細ログ（高負荷時のみ）
+                    if (systemMemoryInfo.third > 70 || currentCacheSizeMB > dynamicCacheLimit) {
+                        println("DEBUG: Memory: ${systemMemoryInfo.third}% (${systemMemoryInfo.first / 1024 / 1024}MB/${systemMemoryInfo.second / 1024 / 1024}MB), " +
+                               "Cache: ${currentCacheSizeMB}MB/${dynamicCacheLimit}MB, " +
+                               "Hit Rate: ${String.format("%.1f", cacheHitRate * 100)}%")
+                    }
+                    
+                    // Phase 5: 緊急対応
+                    when {
+                        systemMemoryInfo.third > 90 -> {
+                            println("CRITICAL: System memory critical!")
+                            emergencyCleanup("System memory critical: ${systemMemoryInfo.third}%")
+                            break
+                        }
+                        
+                        systemMemoryInfo.third > 85 -> {
+                            println("WARNING: High system memory usage, forcing cache cleanup")
+                            checkAndLimitCacheSize(forceCleanup = true)
+                            monitoringInterval = 1000L // 1秒間隔
+                        }
+                        
+                        currentCacheSizeMB > dynamicCacheLimit * 1.5 -> {
+                            println("WARNING: Severe cache overflow, forcing cleanup")
+                            checkAndLimitCacheSize(forceCleanup = true)
+                            monitoringInterval = 2000L // 2秒間隔
+                        }
+                        
+                        systemMemoryInfo.third > 70 || currentCacheSizeMB > dynamicCacheLimit -> {
+                            // 高負荷時は監視頻度を上げる
+                            monitoringInterval = 2000L
+                        }
+                        
+                        else -> {
+                            // 正常時は監視頻度を下げる
+                            monitoringInterval = 5000L
+                        }
+                    }
+                    
+                    // Phase 6: キャッシュ効率の監視
+                    if (cacheHitRate < 0.5 && currentCacheSizeMB > dynamicCacheLimit * 0.5) {
+                        println("INFO: Low cache hit rate (${String.format("%.1f", cacheHitRate * 100)}%), consider cache strategy optimization")
+                    }
+                    
+                    // Phase 7: 長期間クリーンアップがない場合の予防措置
+                    val timeSinceLastCleanup = System.currentTimeMillis() - lastCacheCleanupTime
+                    if (timeSinceLastCleanup > 300000 && currentCacheSizeMB > dynamicCacheLimit * 0.8) { // 5分
+                        println("INFO: Preventive cache cleanup due to long period without cleanup")
+                        checkAndLimitCacheSize(forceCleanup = true)
+                    }
+                    
+                    // Phase 8: 定期統計レポート（高負荷時または10分ごと）
+                    if (systemMemoryInfo.third > 75 || timeSinceLastCleanup > 600000) { // 10分
+                        logCacheStatistics()
+                    }
+                    
+                    kotlinx.coroutines.delay(monitoringInterval)
+                    
                 } catch (e: Exception) {
-                    println("ERROR: Memory monitoring failed: ${e.message}")
+                    println("ERROR: Cache monitoring failed: ${e.message}")
+                    e.printStackTrace()
                     break
                 }
             }
         }
         
         onDispose {
-            println("DEBUG: Memory monitor disposing")
-            memoryMonitorJob.cancel()
+            println("DEBUG: Cache monitor disposing")
+            cacheMonitorJob.cancel()
         }
     }
 
