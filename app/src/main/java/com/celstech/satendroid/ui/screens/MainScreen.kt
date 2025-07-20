@@ -113,6 +113,82 @@ fun MainScreen() {
         }
     }
 
+
+
+    // 完全な状態クリア関数（強化版）
+    fun clearAllStateAndMemory() {
+        println("DEBUG: Starting enhanced cleanup of all state and memory")
+        try {
+            // 段階的クリーンアップ
+            println("DEBUG: Step 1 - Clearing memory cache")
+            directZipHandler.clearMemoryCache()
+            
+            println("DEBUG: Step 2 - Closing ZIP file")
+            directZipHandler.closeCurrentZipFile()
+            
+            println("DEBUG: Step 3 - Resetting state machine")
+            stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+            
+            println("DEBUG: Step 4 - Clearing UI state")
+            lastReadingProgress = null
+            fileCompletionUpdate = null
+            showTopBar = false
+            
+            println("DEBUG: Step 5 - Requesting garbage collection")
+            System.gc()
+            
+            println("DEBUG: Enhanced cleanup completed successfully")
+        } catch (e: Exception) {
+            println("ERROR: Enhanced cleanup failed: ${e.message}")
+            e.printStackTrace()
+            
+            // フォールバック：強制クリーンアップ
+            try {
+                println("DEBUG: Performing fallback cleanup")
+                directZipHandler.cleanup()
+                System.gc()
+                System.runFinalization()
+            } catch (fallbackError: Exception) {
+                println("ERROR: Fallback cleanup also failed: ${fallbackError.message}")
+            }
+        }
+    }
+
+    // 緊急クリーンアップ関数（メモリ不足時など）
+    fun emergencyCleanup(reason: String = "Unknown") {
+        println("EMERGENCY: Starting emergency cleanup - Reason: $reason")
+        try {
+            // 即座に全てのコルーチンを停止
+            supervisorJob.cancel()
+            
+            // 即座にZIPファイルを閉じる
+            directZipHandler.closeCurrentZipFile()
+            
+            // メモリキャッシュを強制クリア
+            directZipHandler.clearMemoryCache()
+            
+            // State Machineを強制リセット
+            stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+            
+            // UI状態をクリア
+            lastReadingProgress = null
+            fileCompletionUpdate = null
+            showTopBar = false
+            
+            // 強制ガベージコレクション
+            System.gc()
+            System.runFinalization()
+            
+            // ファイルリスト画面に戻る
+            currentView = ViewState.LocalFileList
+            
+            println("EMERGENCY: Emergency cleanup completed")
+        } catch (e: Exception) {
+            println("CRITICAL: Emergency cleanup failed: ${e.message}")
+            e.printStackTrace()
+        }
+    }
+
     // State Machine状態変化の監視と処理
     LaunchedEffect(loadingState) {
         when (val state = loadingState) {
@@ -236,6 +312,25 @@ fun MainScreen() {
             is FileLoadingStateMachine.LoadingState.Error -> {
                 println("DEBUG: State Machine - Error: ${state.message}")
                 state.throwable?.printStackTrace()
+                
+                // エラー時の自動クリーンアップ
+                try {
+                    println("DEBUG: Performing automatic cleanup due to error")
+                    clearAllStateAndMemory()
+                    
+                    // エラーが重大な場合は緊急クリーンアップ
+                    val errorMessage = state.message.lowercase()
+                    if (errorMessage.contains("memory") || 
+                        errorMessage.contains("timeout") || 
+                        errorMessage.contains("crash")) {
+                        println("WARNING: Critical error detected, performing emergency cleanup")
+                        emergencyCleanup("Critical error: ${state.message}")
+                    }
+                } catch (cleanupError: Exception) {
+                    println("ERROR: Cleanup during error handling failed: ${cleanupError.message}")
+                    emergencyCleanup("Cleanup failure during error handling")
+                }
+                
                 currentView = ViewState.LocalFileList
                 stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
             }
@@ -246,26 +341,56 @@ fun MainScreen() {
         }
     }
 
-    // 完全な状態クリア関数（State Machine対応版）
-    fun clearAllStateAndMemory() {
-        println("DEBUG: Starting cleanup of all state and memory")
-        directZipHandler.clearMemoryCache()
-        directZipHandler.closeCurrentZipFile()
-        stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
-        println("DEBUG: Cleanup completed")
-    }
 
-    // ファイルナビゲーション処理（StructuredConcurrency対応版）
+
+    // ファイルナビゲーション処理（強化されたクリーンアップ対応版）
     fun navigateToZipFile(newZipFile: File, isNextFile: Boolean = false) {
         println("DEBUG: Starting navigation to new file: ${newZipFile.name} (isNextFile: $isNextFile)")
         
         mainScope.launch {
             try {
-                // ファイル切り替え前にリソースをクリア
-                println("DEBUG: Clearing resources before navigation")
+                // ファイル切り替え前の包括的リソースクリア
+                println("DEBUG: Performing comprehensive resource cleanup before navigation")
+                
+                // Phase 1: 現在のファイル状態を保存
+                currentImageViewerState?.let { state ->
+                    if (pagerState.currentPage >= 0) {
+                        directZipHandler.saveCurrentPosition(
+                            state.currentZipUri,
+                            pagerState.currentPage,
+                            state.currentZipFile
+                        )
+                        println("DEBUG: Current position saved before navigation: ${pagerState.currentPage}")
+                    }
+                }
+                
+                // Phase 2: IO処理でリソースクリア
                 withContext(Dispatchers.IO) {
+                    try {
+                        directZipHandler.clearMemoryCache()
+                        directZipHandler.closeCurrentZipFile()
+                        println("DEBUG: File handles and cache cleared")
+                    } catch (ioError: Exception) {
+                        println("ERROR: IO cleanup failed: ${ioError.message}")
+                        throw ioError
+                    }
+                }
+                
+                // Phase 3: ガベージコレクション
+                System.gc()
+                
+                // Phase 4: メモリ使用量チェック
+                val runtime = Runtime.getRuntime()
+                val usedMemory = runtime.totalMemory() - runtime.freeMemory()
+                val maxMemory = runtime.maxMemory()
+                val memoryUsagePercent = (usedMemory.toDouble() / maxMemory * 100).toInt()
+                
+                if (memoryUsagePercent > 80) {
+                    println("WARNING: High memory usage before navigation: ${memoryUsagePercent}%")
+                    // 追加のクリーンアップ
                     directZipHandler.clearMemoryCache()
-                    directZipHandler.closeCurrentZipFile()
+                    System.gc()
+                    kotlinx.coroutines.delay(100) // GCの完了を待つ
                 }
                 
                 println("DEBUG: Starting state machine action for: ${newZipFile.name}")
@@ -279,12 +404,14 @@ fun MainScreen() {
                 
                 if (!success) {
                     println("ERROR: Failed to start navigation - state machine rejected action")
-                    // State Machineが処理を受け付けない場合は強制リセット
-                    println("DEBUG: Forcing state machine reset")
-                    stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+                    // State Machineが処理を受け付けない場合の復旧処理
+                    println("DEBUG: Attempting recovery with cleanup and reset")
+                    clearAllStateAndMemory()
+                    kotlinx.coroutines.delay(100)
                     
-                    // リセット後に再実行
+                    stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
                     kotlinx.coroutines.delay(50)
+                    
                     val retrySuccess = stateMachine.processAction(
                         FileLoadingStateMachine.LoadingAction.StartLoading(
                             Uri.fromFile(newZipFile), 
@@ -294,24 +421,65 @@ fun MainScreen() {
                     )
                     
                     if (!retrySuccess) {
-                        println("ERROR: Failed to navigate to file even after reset: ${newZipFile.name}")
+                        println("ERROR: Failed to navigate to file even after recovery: ${newZipFile.name}")
+                        emergencyCleanup("Navigation failure after recovery")
                     }
                 }
             } catch (e: Exception) {
                 println("ERROR: Exception during file navigation: ${e.message}")
                 e.printStackTrace()
-                // エラーが発生した場合は状態をリセット
-                stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+                
+                // エラー発生時の緊急対応
+                try {
+                    clearAllStateAndMemory()
+                    stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+                } catch (recoveryError: Exception) {
+                    println("CRITICAL: Recovery failed: ${recoveryError.message}")
+                    emergencyCleanup("Navigation exception with recovery failure")
+                }
             }
         }
     }
 
-    // ファイル読み込み開始処理（StructuredConcurrency対応版）
+    // ファイル読み込み開始処理（強化されたクリーンアップ対応版）
     fun startFileLoading(uri: Uri, file: File? = null) {
         println("DEBUG: Starting file loading: ${file?.name ?: uri}")
         
         mainScope.launch {
             try {
+                // ファイル読み込み前の予防的クリーンアップ
+                println("DEBUG: Performing preventive cleanup before file loading")
+                
+                // 現在のリソースをクリア
+                withContext(Dispatchers.IO) {
+                    directZipHandler.clearMemoryCache()
+                    directZipHandler.closeCurrentZipFile()
+                }
+                
+                // メモリ状況をチェック
+                val runtime = Runtime.getRuntime()
+                val usedMemory = runtime.totalMemory() - runtime.freeMemory()
+                val maxMemory = runtime.maxMemory()
+                val memoryUsagePercent = (usedMemory.toDouble() / maxMemory * 100).toInt()
+                
+                println("DEBUG: Memory usage before loading: ${memoryUsagePercent}%")
+                
+                if (memoryUsagePercent > 75) {
+                    println("WARNING: High memory usage detected, performing aggressive cleanup")
+                    System.gc()
+                    kotlinx.coroutines.delay(100)
+                    
+                    val newUsedMemory = runtime.totalMemory() - runtime.freeMemory()
+                    val newMemoryUsagePercent = (newUsedMemory.toDouble() / maxMemory * 100).toInt()
+                    println("DEBUG: Memory usage after cleanup: ${newMemoryUsagePercent}%")
+                    
+                    if (newMemoryUsagePercent > 85) {
+                        println("ERROR: Memory usage still critical, aborting file loading")
+                        emergencyCleanup("Critical memory usage before file loading")
+                        return@launch
+                    }
+                }
+                
                 println("DEBUG: Starting state machine action for file loading")
                 val success = stateMachine.processAction(
                     FileLoadingStateMachine.LoadingAction.StartLoading(uri, file, isNextFile = false)
@@ -319,25 +487,35 @@ fun MainScreen() {
                 
                 if (!success) {
                     println("ERROR: Failed to start file loading - state machine rejected action")
-                    // State Machineが処理を受け付けない場合は強制リセット
-                    println("DEBUG: Forcing state machine reset")
-                    stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+                    // 復旧処理
+                    println("DEBUG: Attempting recovery for file loading")
+                    clearAllStateAndMemory()
+                    kotlinx.coroutines.delay(100)
                     
-                    // リセット後に再実行
+                    stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
                     kotlinx.coroutines.delay(50)
+                    
                     val retrySuccess = stateMachine.processAction(
                         FileLoadingStateMachine.LoadingAction.StartLoading(uri, file, isNextFile = false)
                     )
                     
                     if (!retrySuccess) {
-                        println("ERROR: Failed to load file even after reset: ${file?.name ?: uri}")
+                        println("ERROR: Failed to load file even after recovery: ${file?.name ?: uri}")
+                        emergencyCleanup("File loading failure after recovery")
                     }
                 }
             } catch (e: Exception) {
                 println("ERROR: Exception during file loading: ${e.message}")
                 e.printStackTrace()
-                // エラーが発生した場合は状態をリセット
-                stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+                
+                // エラー発生時の緊急対応
+                try {
+                    clearAllStateAndMemory()
+                    stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+                } catch (recoveryError: Exception) {
+                    println("CRITICAL: File loading recovery failed: ${recoveryError.message}")
+                    emergencyCleanup("File loading exception with recovery failure")
+                }
             }
         }
     }
@@ -383,19 +561,279 @@ fun MainScreen() {
         }
     }
 
-    // Cleanup when component is disposed - StructuredConcurrency対応
-    DisposableEffect(Unit) {
+    // DirectZipHandler専用のクリーンアップ
+    DisposableEffect(directZipHandler) {
         onDispose {
-            println("DEBUG: MainScreen disposing - cleaning up all resources and coroutines")
+            println("DEBUG: DirectZipHandler disposing")
             try {
-                // SupervisorJobをキャンセルして全ての子コルーチンを停止
-                supervisorJob.cancel()
-                clearAllStateAndMemory()
+                directZipHandler.clearMemoryCache()
+                directZipHandler.closeCurrentZipFile()
                 directZipHandler.cleanup()
+                println("DEBUG: DirectZipHandler cleanup completed")
             } catch (e: Exception) {
-                println("ERROR: Exception during cleanup: ${e.message}")
+                println("ERROR: DirectZipHandler cleanup failed: ${e.message}")
                 e.printStackTrace()
             }
+        }
+    }
+
+    // StateMachine専用のクリーンアップ
+    DisposableEffect(stateMachine) {
+        onDispose {
+            println("DEBUG: StateMachine disposing")
+            try {
+                stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+                println("DEBUG: StateMachine cleanup completed")
+            } catch (e: Exception) {
+                println("ERROR: StateMachine cleanup failed: ${e.message}")
+                e.printStackTrace()
+            }
+        }
+    }
+
+    // CurrentView変更時のクリーンアップ
+    DisposableEffect(currentView) {
+        onDispose {
+            println("DEBUG: CurrentView changing from ${currentView::class.simpleName}")
+            try {
+                when (currentView) {
+                    is ViewState.ImageViewer -> {
+                        println("DEBUG: Cleaning up ImageViewer resources")
+                        // 画像ビューア固有のクリーンアップ
+                        directZipHandler.clearMemoryCache()
+                        
+                        // 現在の位置を最終保存
+                        currentImageViewerState?.let { state ->
+                            if (pagerState.currentPage >= 0) {
+                                directZipHandler.saveCurrentPosition(
+                                    state.currentZipUri,
+                                    pagerState.currentPage,
+                                    state.currentZipFile
+                                )
+                                println("DEBUG: Final position saved: ${pagerState.currentPage}")
+                            }
+                        }
+                    }
+                    is ViewState.DropboxBrowser -> {
+                        println("DEBUG: Cleaning up DropboxBrowser resources")
+                        // Dropbox関連のクリーンアップ
+                    }
+                    is ViewState.Settings -> {
+                        println("DEBUG: Cleaning up Settings resources")
+                        // 設定画面関連のクリーンアップ
+                    }
+                    is ViewState.LocalFileList -> {
+                        println("DEBUG: Cleaning up LocalFileList resources")
+                        // ファイルリスト関連のクリーンアップ
+                    }
+                }
+                println("DEBUG: CurrentView cleanup completed")
+            } catch (e: Exception) {
+                println("ERROR: CurrentView cleanup failed: ${e.message}")
+                e.printStackTrace()
+            }
+        }
+    }
+
+    // ImageViewerState変更時のクリーンアップ（ファイル切り替え時）
+    DisposableEffect(currentImageViewerState?.fileId) {
+        val currentFileId = currentImageViewerState?.fileId
+        onDispose {
+            if (currentFileId != null) {
+                println("DEBUG: ImageViewerState changing from file: $currentFileId")
+                try {
+                    // 前のファイルのリソースを明示的にクリア
+                    mainScope.launch(Dispatchers.IO) {
+                        directZipHandler.clearMemoryCache()
+                        println("DEBUG: Previous file resources cleared for: $currentFileId")
+                    }
+                } catch (e: Exception) {
+                    println("ERROR: ImageViewerState cleanup failed: ${e.message}")
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+
+    // PagerState専用のクリーンアップ
+    DisposableEffect(pagerState) {
+        onDispose {
+            println("DEBUG: PagerState disposing")
+            try {
+                // 最終位置の保存
+                currentImageViewerState?.let { state ->
+                    if (pagerState.currentPage >= 0) {
+                        directZipHandler.saveCurrentPosition(
+                            state.currentZipUri,
+                            pagerState.currentPage,
+                            state.currentZipFile
+                        )
+                        println("DEBUG: PagerState final position saved: ${pagerState.currentPage}")
+                    }
+                }
+                println("DEBUG: PagerState cleanup completed")
+            } catch (e: Exception) {
+                println("ERROR: PagerState cleanup failed: ${e.message}")
+                e.printStackTrace()
+            }
+        }
+    }
+
+    // メモリ使用量監視とクリーンアップ
+    DisposableEffect(currentImageViewerState) {
+        val memoryMonitorJob = mainScope.launch {
+            while (true) {
+                try {
+                    val runtime = Runtime.getRuntime()
+                    val usedMemory = runtime.totalMemory() - runtime.freeMemory()
+                    val maxMemory = runtime.maxMemory()
+                    val memoryUsagePercent = (usedMemory.toDouble() / maxMemory * 100).toInt()
+                    
+                    println("DEBUG: Memory usage: ${memoryUsagePercent}% (${usedMemory / 1024 / 1024}MB / ${maxMemory / 1024 / 1024}MB)")
+                    
+                    // メモリ使用量が80%を超えた場合は予防的クリーンアップ
+                    if (memoryUsagePercent > 80) {
+                        println("WARNING: High memory usage detected! Performing preventive cleanup...")
+                        directZipHandler.clearMemoryCache()
+                        
+                        // メモリ使用量が90%を超えた場合は緊急クリーンアップ
+                        if (memoryUsagePercent > 90) {
+                            println("CRITICAL: Critical memory usage! Performing emergency cleanup...")
+                            emergencyCleanup("Critical memory usage: ${memoryUsagePercent}%")
+                            break // 監視を停止して処理を優先
+                        } else {
+                            System.gc() // 通常のガベージコレクション
+                        }
+                        
+                        // クリーンアップ効果をチェック
+                        kotlinx.coroutines.delay(1000)
+                        val newUsedMemory = runtime.totalMemory() - runtime.freeMemory()
+                        val newMemoryUsagePercent = (newUsedMemory.toDouble() / maxMemory * 100).toInt()
+                        println("DEBUG: Memory usage after cleanup: ${newMemoryUsagePercent}%")
+                        
+                        if (newMemoryUsagePercent > memoryUsagePercent - 5) {
+                            println("WARNING: Cleanup was not effective, memory usage still high")
+                            // クリーンアップ効果が低い場合は監視頻度を上げる
+                            kotlinx.coroutines.delay(2000) // 2秒後に再チェック
+                        } else {
+                            println("DEBUG: Cleanup successful, memory usage reduced by ${memoryUsagePercent - newMemoryUsagePercent}%")
+                        }
+                    }
+                    
+                    kotlinx.coroutines.delay(5000) // 5秒ごとにチェック
+                } catch (e: Exception) {
+                    println("ERROR: Memory monitoring failed: ${e.message}")
+                    break
+                }
+            }
+        }
+        
+        onDispose {
+            println("DEBUG: Memory monitor disposing")
+            memoryMonitorJob.cancel()
+        }
+    }
+
+    // メインのクリーンアップ - 段階的で包括的なリソース解放
+    DisposableEffect(Unit) {
+        onDispose {
+            println("DEBUG: MainScreen disposing - starting comprehensive cleanup")
+            
+            // Phase 1: UI状態の停止
+            try {
+                println("DEBUG: Phase 1 - Stopping UI operations")
+                showTopBar = false
+                
+                // 進行中の状態遷移を停止
+                if (stateMachine.isLoading()) {
+                    println("DEBUG: Stopping ongoing state machine operations")
+                    stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+                }
+                println("DEBUG: Phase 1 completed")
+            } catch (e: Exception) {
+                println("ERROR: Phase 1 cleanup failed: ${e.message}")
+                e.printStackTrace()
+            }
+            
+            // Phase 2: コルーチンの停止
+            try {
+                println("DEBUG: Phase 2 - Cancelling all coroutines")
+                supervisorJob.cancel()
+                println("DEBUG: SupervisorJob cancelled, all child coroutines stopped")
+                
+                // コルーチンの完了を少し待つ
+                try {
+                    Thread.sleep(100)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                }
+                println("DEBUG: Phase 2 completed")
+            } catch (e: Exception) {
+                println("ERROR: Phase 2 cleanup failed: ${e.message}")
+                e.printStackTrace()
+            }
+            
+            // Phase 3: ファイルハンドルとZIPリソース
+            try {
+                println("DEBUG: Phase 3 - Closing file handles and ZIP resources")
+                directZipHandler.closeCurrentZipFile()
+                println("DEBUG: ZIP file handles closed")
+                println("DEBUG: Phase 3 completed")
+            } catch (e: Exception) {
+                println("ERROR: Phase 3 cleanup failed: ${e.message}")
+                e.printStackTrace()
+            }
+            
+            // Phase 4: メモリキャッシュのクリア
+            try {
+                println("DEBUG: Phase 4 - Clearing memory caches")
+                directZipHandler.clearMemoryCache()
+                println("DEBUG: Memory caches cleared")
+                println("DEBUG: Phase 4 completed")
+            } catch (e: Exception) {
+                println("ERROR: Phase 4 cleanup failed: ${e.message}")
+                e.printStackTrace()
+            }
+            
+            // Phase 5: ハンドラーとマネージャーのクリーンアップ
+            try {
+                println("DEBUG: Phase 5 - Cleaning up handlers and managers")
+                directZipHandler.cleanup()
+                println("DEBUG: DirectZipHandler cleaned up")
+                
+                // ファイナルの状態リセット
+                try {
+                    stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+                } catch (e: Exception) {
+                    println("DEBUG: StateMachine already disposed: ${e.message}")
+                }
+                println("DEBUG: Phase 5 completed")
+            } catch (e: Exception) {
+                println("ERROR: Phase 5 cleanup failed: ${e.message}")
+                e.printStackTrace()
+            }
+            
+            // Phase 6: システムリソースの解放
+            try {
+                println("DEBUG: Phase 6 - System resource cleanup")
+                
+                // 強制ガベージコレクション
+                System.gc()
+                System.runFinalization()
+                
+                val runtime = Runtime.getRuntime()
+                val usedMemory = runtime.totalMemory() - runtime.freeMemory()
+                val maxMemory = runtime.maxMemory()
+                val memoryUsagePercent = (usedMemory.toDouble() / maxMemory * 100).toInt()
+                
+                println("DEBUG: Final memory usage: ${memoryUsagePercent}% (${usedMemory / 1024 / 1024}MB / ${maxMemory / 1024 / 1024}MB)")
+                println("DEBUG: Phase 6 completed")
+            } catch (e: Exception) {
+                println("ERROR: Phase 6 cleanup failed: ${e.message}")
+                e.printStackTrace()
+            }
+            
+            println("DEBUG: MainScreen comprehensive cleanup completed successfully")
         }
     }
 
