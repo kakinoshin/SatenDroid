@@ -21,7 +21,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,8 +36,11 @@ import com.celstech.satendroid.utils.DirectZipImageHandler
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import java.io.File
 
 /**
@@ -49,7 +51,12 @@ import java.io.File
 @Composable
 fun MainScreen() {
     val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
+    
+    // SupervisorJobを使用したStructured Concurrency
+    val supervisorJob = remember { SupervisorJob() }
+    val mainScope = remember(supervisorJob) { 
+        CoroutineScope(Dispatchers.Main + supervisorJob) 
+    }
 
     // Main state for the current view
     var currentView by remember { mutableStateOf<ViewState>(ViewState.LocalFileList) }
@@ -66,9 +73,6 @@ fun MainScreen() {
 
     // State for directory navigation
     var savedDirectoryPath by remember { mutableStateOf("") }
-
-    // コルーチンジョブの管理（メモリリーク防止）
-    var currentLoadingJob by remember { mutableStateOf<Job?>(null) }
 
     // 直接ZIP画像ハンドラー
     val directZipHandler = remember { DirectZipImageHandler(context) }
@@ -119,7 +123,7 @@ fun MainScreen() {
             
             is FileLoadingStateMachine.LoadingState.CleaningResources -> {
                 println("DEBUG: State Machine - Cleaning Resources")
-                coroutineScope.launch {
+                mainScope.launch {
                     try {
                         println("DEBUG: Clearing memory resources")
                         directZipHandler.clearMemoryCache()
@@ -140,14 +144,57 @@ fun MainScreen() {
             is FileLoadingStateMachine.LoadingState.PreparingFile -> {
                 println("DEBUG: State Machine - Preparing File")
                 pendingRequest?.let { currentRequest ->
-                    coroutineScope.launch {
+                    mainScope.launch {
                         try {
                             println("DEBUG: Opening ZIP file (state machine): ${currentRequest.file?.name ?: currentRequest.uri}")
                             
-                            // タイムアウト処理を追加
+                            // Structured Concurrencyでタイムアウト処理を管理
+                            val preparationJob = launch {
+                                val imageEntryList = withContext(Dispatchers.IO) {
+                                    directZipHandler.getImageEntriesFromZip(currentRequest.uri, currentRequest.file)
+                                }
+                                
+                                val newState = if (imageEntryList.isEmpty()) {
+                                    println("DEBUG: No images found in ZIP")
+                                    null
+                                } else {
+                                    // 次のファイルの場合は1ページ目から、それ以外は保存された位置から
+                                    val initialPage = if (currentRequest.isNextFile) {
+                                        println("DEBUG: Next file navigation - starting from page 1")
+                                        0
+                                    } else {
+                                        val savedPosition = directZipHandler.getSavedPosition(currentRequest.uri, currentRequest.file) ?: 0
+                                        val validPosition = savedPosition.coerceIn(0, imageEntryList.size - 1)
+                                        println("DEBUG: Saved position: $savedPosition, Valid position: $validPosition")
+                                        validPosition
+                                    }
+                                    
+                                    val navigationInfo = currentRequest.file?.let { file ->
+                                        fileNavigationManager.getNavigationInfo(file)
+                                    }
+                                    
+                                    ImageViewerState(
+                                        imageEntries = imageEntryList,
+                                        currentZipUri = currentRequest.uri,
+                                        currentZipFile = currentRequest.file,
+                                        fileNavigationInfo = navigationInfo,
+                                        initialPage = initialPage
+                                    ).also {
+                                        println("DEBUG: ZIP file opened successfully - ${imageEntryList.size} images, initial page: $initialPage")
+                                    }
+                                }
+                                
+                                println("DEBUG: Sending FilePreparationComplete action")
+                                stateMachine.processAction(
+                                    FileLoadingStateMachine.LoadingAction.FilePreparationComplete(newState)
+                                )
+                            }
+                            
+                            // タイムアウト処理も子コルーチンとして管理
                             val timeoutJob = launch {
                                 kotlinx.coroutines.delay(30000) // 30秒でタイムアウト
                                 println("ERROR: File preparation timeout")
+                                preparationJob.cancel() // 準備ジョブをキャンセル
                                 stateMachine.processAction(
                                     FileLoadingStateMachine.LoadingAction.FilePreparationFailed(
                                         Exception("File preparation timeout")
@@ -155,45 +202,13 @@ fun MainScreen() {
                                 )
                             }
                             
-                            val imageEntryList = directZipHandler.getImageEntriesFromZip(currentRequest.uri, currentRequest.file)
-                            
-                            // タイムアウトジョブをキャンセル
-                            timeoutJob.cancel()
-                            
-                            val newState = if (imageEntryList.isEmpty()) {
-                                println("DEBUG: No images found in ZIP")
-                                null
-                            } else {
-                                // 次のファイルの場合は1ページ目から、それ以外は保存された位置から
-                                val initialPage = if (currentRequest.isNextFile) {
-                                    println("DEBUG: Next file navigation - starting from page 1")
-                                    0
-                                } else {
-                                    val savedPosition = directZipHandler.getSavedPosition(currentRequest.uri, currentRequest.file) ?: 0
-                                    val validPosition = savedPosition.coerceIn(0, imageEntryList.size - 1)
-                                    println("DEBUG: Saved position: $savedPosition, Valid position: $validPosition")
-                                    validPosition
-                                }
-                                
-                                val navigationInfo = currentRequest.file?.let { file ->
-                                    fileNavigationManager.getNavigationInfo(file)
-                                }
-                                
-                                ImageViewerState(
-                                    imageEntries = imageEntryList,
-                                    currentZipUri = currentRequest.uri,
-                                    currentZipFile = currentRequest.file,
-                                    fileNavigationInfo = navigationInfo,
-                                    initialPage = initialPage
-                                ).also {
-                                    println("DEBUG: ZIP file opened successfully - ${imageEntryList.size} images, initial page: $initialPage")
+                            // 準備が完了したらタイムアウトジョブをキャンセル
+                            preparationJob.invokeOnCompletion { exception ->
+                                if (exception == null) {
+                                    timeoutJob.cancel()
                                 }
                             }
                             
-                            println("DEBUG: Sending FilePreparationComplete action")
-                            stateMachine.processAction(
-                                FileLoadingStateMachine.LoadingAction.FilePreparationComplete(newState)
-                            )
                         } catch (e: Exception) {
                             println("DEBUG: Error during file preparation: ${e.message}")
                             e.printStackTrace()
@@ -240,19 +255,18 @@ fun MainScreen() {
         println("DEBUG: Cleanup completed")
     }
 
-    // ファイルナビゲーション処理（State Machine対応版）
+    // ファイルナビゲーション処理（StructuredConcurrency対応版）
     fun navigateToZipFile(newZipFile: File, isNextFile: Boolean = false) {
         println("DEBUG: Starting navigation to new file: ${newZipFile.name} (isNextFile: $isNextFile)")
         
-        // 現在のジョブをキャンセル
-        currentLoadingJob?.cancel()
-        
-        currentLoadingJob = coroutineScope.launch {
+        mainScope.launch {
             try {
                 // ファイル切り替え前にリソースをクリア
                 println("DEBUG: Clearing resources before navigation")
-                directZipHandler.clearMemoryCache()
-                directZipHandler.closeCurrentZipFile()
+                withContext(Dispatchers.IO) {
+                    directZipHandler.clearMemoryCache()
+                    directZipHandler.closeCurrentZipFile()
+                }
                 
                 println("DEBUG: Starting state machine action for: ${newZipFile.name}")
                 val success = stateMachine.processAction(
@@ -292,14 +306,11 @@ fun MainScreen() {
         }
     }
 
-    // ファイル読み込み開始処理（State Machine対応版）
+    // ファイル読み込み開始処理（StructuredConcurrency対応版）
     fun startFileLoading(uri: Uri, file: File? = null) {
         println("DEBUG: Starting file loading: ${file?.name ?: uri}")
         
-        // 現在のジョブをキャンセル
-        currentLoadingJob?.cancel()
-        
-        currentLoadingJob = coroutineScope.launch {
+        mainScope.launch {
             try {
                 println("DEBUG: Starting state machine action for file loading")
                 val success = stateMachine.processAction(
@@ -372,13 +383,19 @@ fun MainScreen() {
         }
     }
 
-    // Cleanup when component is disposed
+    // Cleanup when component is disposed - StructuredConcurrency対応
     DisposableEffect(Unit) {
         onDispose {
-            println("DEBUG: MainScreen disposing - cleaning up ZIP resources")
-            currentLoadingJob?.cancel()
-            clearAllStateAndMemory()
-            directZipHandler.cleanup()
+            println("DEBUG: MainScreen disposing - cleaning up all resources and coroutines")
+            try {
+                // SupervisorJobをキャンセルして全ての子コルーチンを停止
+                supervisorJob.cancel()
+                clearAllStateAndMemory()
+                directZipHandler.cleanup()
+            } catch (e: Exception) {
+                println("ERROR: Exception during cleanup: ${e.message}")
+                e.printStackTrace()
+            }
         }
     }
 
@@ -389,6 +406,9 @@ fun MainScreen() {
                 println("DEBUG: Returned to file list - resetting state machine")
                 stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
                 directZipHandler.closeCurrentZipFile()
+                // 前の画面から戻った時の状態をクリア
+                lastReadingProgress = null
+                fileCompletionUpdate = null
             }
             
             FileSelectionScreen(
@@ -419,12 +439,8 @@ fun MainScreen() {
                         println("DEBUG: Returned from image viewer")
                     }
                 } else null,
-                readingStatusUpdate = lastReadingProgress?.also {
-                    lastReadingProgress = null
-                },
-                fileCompletionUpdate = fileCompletionUpdate?.also {
-                    fileCompletionUpdate = null
-                }
+                readingStatusUpdate = lastReadingProgress,
+                fileCompletionUpdate = fileCompletionUpdate
             )
         }
 
@@ -485,7 +501,6 @@ fun MainScreen() {
                     onToggleTopBar = { showTopBar = !showTopBar },
                     onBackToFiles = {
                         println("DEBUG: Back to files - resetting state machine")
-                        currentLoadingJob?.cancel()
                         clearAllStateAndMemory()
                         currentView = ViewState.LocalFileList
                     },
