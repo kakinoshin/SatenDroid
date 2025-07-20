@@ -66,6 +66,42 @@ fun MainScreen() {
     val loadingState by stateMachine.currentState.collectAsState()
     val pendingRequest by stateMachine.pendingRequest.collectAsState()
 
+    // State Machine状態管理の強化
+    var previousState by remember { mutableStateOf<FileLoadingStateMachine.LoadingState?>(null) }
+    var stateTransitionTime by remember { mutableStateOf(0L) }
+    var stateTransitionCount by remember { mutableStateOf(0) }
+    var lastErrorRecoveryTime by remember { mutableStateOf(0L) }
+    var consecutiveErrorCount by remember { mutableStateOf(0) }
+
+    // State Machine初期化と状態監視
+    LaunchedEffect(Unit) {
+        try {
+            println("DEBUG: Initializing State Machine with proper resource management")
+            
+            // 初期状態の確認と設定
+            val initialState = stateMachine.currentState.value
+            println("DEBUG: Initial State Machine state: ${initialState::class.simpleName}")
+            
+            // 初期化時のリソースチェック
+            val runtime = Runtime.getRuntime()
+            val availableMemory = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory())
+            println("DEBUG: Available memory at initialization: ${availableMemory / 1024 / 1024}MB")
+            
+            // State Machineが異常状態にある場合はリセット
+            if (initialState is FileLoadingStateMachine.LoadingState.Error) {
+                println("WARNING: State Machine initialized in error state, performing reset")
+                stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+            }
+            
+            stateTransitionTime = System.currentTimeMillis()
+            println("DEBUG: State Machine initialization completed")
+            
+        } catch (e: Exception) {
+            println("ERROR: State Machine initialization failed: ${e.message}")
+            e.printStackTrace()
+        }
+    }
+
     // 読書状態更新のための状態
     var lastReadingProgress by remember { mutableStateOf<Pair<File, Int>?>(null) }
     var fileCompletionUpdate by remember { mutableStateOf<File?>(null) }
@@ -167,39 +203,84 @@ fun MainScreen() {
 
 
 
-    // 完全な状態クリア関数（キャッシュサイズ制限対応強化版）
+    // 完全な状態クリア関数（State Machine管理強化版）
     fun clearAllStateAndMemory() {
-        println("DEBUG: Starting enhanced cleanup of all state and memory")
+        println("DEBUG: Starting enhanced cleanup with State Machine management")
         try {
-            // 段階的クリーンアップ
-            println("DEBUG: Step 1 - Checking cache size before cleanup")
-            val beforeCleanupCacheSize = currentCacheSizeMB
+            // Phase 1: State Machine状態確認
+            val currentState = stateMachine.currentState.value
+            println("DEBUG: Current State Machine state before cleanup: ${currentState::class.simpleName}")
             
-            println("DEBUG: Step 2 - Clearing memory cache")
+            // Phase 2: キャッシュ状態の記録
+            val beforeCleanupCacheSize = currentCacheSizeMB
+            val runtime = Runtime.getRuntime()
+            val usedMemory = runtime.totalMemory() - runtime.freeMemory()
+            val maxMemory = runtime.maxMemory()
+            val beforeMemoryUsage = ((usedMemory.toDouble() / maxMemory) * 100).toInt()
+            
+            // Phase 3: State Machine停止（進行中の処理がある場合）
+            if (stateMachine.isLoading()) {
+                println("DEBUG: State Machine is loading, requesting stop")
+                try {
+                    stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+                    // 少し待ってState Machineの停止を確認
+                    var waitTime = 0
+                    while (stateMachine.isLoading() && waitTime < 2000) {
+                        Thread.sleep(50)
+                        waitTime += 50
+                    }
+                    
+                    if (stateMachine.isLoading()) {
+                        println("WARNING: State Machine still loading after reset request")
+                    }
+                } catch (e: Exception) {
+                    println("ERROR: Failed to stop State Machine: ${e.message}")
+                }
+            }
+            
+            // Phase 4: 段階的クリーンアップ
+            println("DEBUG: Step 1 - Clearing memory cache")
             directZipHandler.clearMemoryCache()
             currentCacheSizeMB = 0 // キャッシュサイズをリセット
             
-            println("DEBUG: Step 3 - Closing ZIP file")
+            println("DEBUG: Step 2 - Closing ZIP file")
             directZipHandler.closeCurrentZipFile()
             
-            println("DEBUG: Step 4 - Resetting state machine")
+            println("DEBUG: Step 3 - Final State Machine reset")
             stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
             
-            println("DEBUG: Step 5 - Clearing UI state")
+            println("DEBUG: Step 4 - Clearing UI state")
             lastReadingProgress = null
             fileCompletionUpdate = null
             showTopBar = false
             lastSavedPage = -1
             lastSavedFileId = null
             
+            // Phase 5: State Machine管理変数のリセット
+            println("DEBUG: Step 5 - Resetting State Machine management variables")
+            consecutiveErrorCount = 0
+            stateTransitionTime = System.currentTimeMillis()
+            
             println("DEBUG: Step 6 - Requesting garbage collection")
             System.gc()
             
-            // キャッシュクリーンアップ統計
-            println("DEBUG: Cache cleanup statistics - Before: ${beforeCleanupCacheSize}MB, After: ${currentCacheSizeMB}MB")
+            // Phase 6: クリーンアップ効果の確認
+            val runtimeAfter = Runtime.getRuntime()
+            val usedMemoryAfter = runtimeAfter.totalMemory() - runtimeAfter.freeMemory()
+            val maxMemoryAfter = runtimeAfter.maxMemory()
+            val afterMemoryUsage = ((usedMemoryAfter.toDouble() / maxMemoryAfter) * 100).toInt()
+            val memoryReduction = beforeMemoryUsage - afterMemoryUsage
+            
+            // クリーンアップ統計
+            println("DEBUG: Cleanup statistics:")
+            println("  - Cache: ${beforeCleanupCacheSize}MB -> ${currentCacheSizeMB}MB")
+            println("  - Memory: ${beforeMemoryUsage}% -> ${afterMemoryUsage}% (reduced by ${memoryReduction}%)")
+            println("  - State Machine transitions reset")
+            
             lastCacheCleanupTime = System.currentTimeMillis()
             
-            println("DEBUG: Enhanced cleanup completed successfully")
+            println("DEBUG: Enhanced cleanup with State Machine management completed successfully")
+            
         } catch (e: Exception) {
             println("ERROR: Enhanced cleanup failed: ${e.message}")
             e.printStackTrace()
@@ -209,15 +290,280 @@ fun MainScreen() {
                 println("DEBUG: Performing fallback cleanup")
                 directZipHandler.cleanup()
                 currentCacheSizeMB = 0
+                
+                // State Machine強制リセット
+                try {
+                    stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+                } catch (resetError: Exception) {
+                    println("WARNING: State Machine reset failed during fallback: ${resetError.message}")
+                }
+                
                 System.gc()
                 System.runFinalization()
+                
             } catch (fallbackError: Exception) {
                 println("ERROR: Fallback cleanup also failed: ${fallbackError.message}")
             }
         }
     }
 
-    // キャッシュ統計レポート関数
+    // State Machine関連のユーティリティ関数群
+    
+    // 緊急クリーンアップ関数（State Machine管理対応版）
+    fun emergencyCleanup(reason: String = "Unknown") {
+        println("EMERGENCY: Starting emergency cleanup with State Machine management - Reason: $reason")
+        try {
+            // Phase 1: State Machine緊急停止
+            val currentState = stateMachine.currentState.value
+            println("EMERGENCY: Current State Machine state: ${currentState::class.simpleName}")
+            
+            try {
+                // 強制的にState Machineを停止
+                stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+                println("EMERGENCY: State Machine reset completed")
+            } catch (e: Exception) {
+                println("CRITICAL: State Machine reset failed during emergency: ${e.message}")
+            }
+            
+            // Phase 2: 即座に全てのコルーチンを停止
+            supervisorJob.cancel()
+            
+            // Phase 3: 画像キャッシュの強制クリア
+            println("EMERGENCY: Clearing image cache")
+            directZipHandler.clearMemoryCache()
+            currentCacheSizeMB = 0
+            
+            // Phase 4: ZIPファイルを閉じる
+            directZipHandler.closeCurrentZipFile()
+            
+            // Phase 5: UI状態をクリア
+            lastReadingProgress = null
+            fileCompletionUpdate = null
+            showTopBar = false
+            lastSavedPage = -1
+            lastSavedFileId = null
+            
+            // Phase 6: State Machine管理変数の緊急リセット
+            previousState = null
+            stateTransitionCount = 0
+            consecutiveErrorCount = 0
+            stateTransitionTime = System.currentTimeMillis()
+            lastErrorRecoveryTime = System.currentTimeMillis()
+            
+            // Phase 7: システムレベルの強制ガベージコレクション
+            System.gc()
+            System.runFinalization()
+            
+            // Phase 8: 緊急時はファイルリスト画面に戻る
+            currentView = ViewState.LocalFileList
+            
+            lastCacheCleanupTime = System.currentTimeMillis()
+            
+            // Phase 9: 緊急クリーンアップ後の状態確認
+            val runtime = Runtime.getRuntime()
+            val usedMemory = runtime.totalMemory() - runtime.freeMemory()
+            val maxMemory = runtime.maxMemory()
+            val finalMemoryUsage = ((usedMemory.toDouble() / maxMemory) * 100).toInt()
+            val finalState = try {
+                stateMachine.currentState.value::class.simpleName
+            } catch (e: Exception) {
+                "Unknown"
+            }
+            
+            println("EMERGENCY: Emergency cleanup completed")
+            println("EMERGENCY: Final status - Memory: ${finalMemoryUsage}%, State: $finalState")
+            
+        } catch (e: Exception) {
+            println("CRITICAL: Emergency cleanup failed: ${e.message}")
+            e.printStackTrace()
+            
+            // 最後の手段：基本的なクリーンアップのみ実行
+            try {
+                directZipHandler.cleanup()
+                System.gc()
+                System.runFinalization()
+                currentView = ViewState.LocalFileList
+            } catch (finalError: Exception) {
+                println("CRITICAL: Final emergency cleanup also failed: ${finalError.message}")
+            }
+        }
+    }
+    
+    // メモリ使用率取得関数
+    fun getMemoryUsage(): Int {
+        return try {
+            val runtime = Runtime.getRuntime()
+            val usedMemory = runtime.totalMemory() - runtime.freeMemory()
+            val maxMemory = runtime.maxMemory()
+            ((usedMemory.toDouble() / maxMemory) * 100).toInt()
+        } catch (e: Exception) {
+            println("ERROR: Failed to get memory usage: ${e.message}")
+            0
+        }
+    }
+    
+    // リソース状態チェック関数
+    fun checkResourceStatus(): String {
+        return try {
+            val memoryUsage = getMemoryUsage()
+            val cacheUsage = currentCacheSizeMB
+            val maxCache = maxCacheSizeMB
+            
+            when {
+                memoryUsage > 85 || cacheUsage > maxCache * 1.2 -> "critical"
+                memoryUsage > 70 || cacheUsage > maxCache -> "high"
+                memoryUsage > 50 || cacheUsage > maxCache * 0.7 -> "medium"
+                else -> "normal"
+            }
+        } catch (e: Exception) {
+            println("ERROR: Failed to check resource status: ${e.message}")
+            "unknown"
+        }
+    }
+    
+    // メモリ可用性チェック関数
+    fun checkMemoryAvailability(request: Any): Pair<Boolean, String> {
+        return try {
+            val runtime = Runtime.getRuntime()
+            val freeMemory = runtime.freeMemory()
+            val maxMemory = runtime.maxMemory()
+            val totalMemory = runtime.totalMemory()
+            val availableMemory = maxMemory - totalMemory + freeMemory
+            
+            val requiredMemory = 50 * 1024 * 1024L // 最低50MB必要
+            val memoryUsagePercent = getMemoryUsage()
+            
+            when {
+                availableMemory < requiredMemory -> {
+                    Pair(false, "Insufficient available memory: ${availableMemory / 1024 / 1024}MB < 50MB")
+                }
+                memoryUsagePercent > 90 -> {
+                    Pair(false, "Memory usage too high: ${memoryUsagePercent}%")
+                }
+                else -> {
+                    Pair(true, "Memory available: ${availableMemory / 1024 / 1024}MB")
+                }
+            }
+        } catch (e: Exception) {
+            println("ERROR: Memory availability check failed: ${e.message}")
+            Pair(false, "Memory check failed: ${e.message}")
+        }
+    }
+    
+    // リソース診断関数
+    fun performResourceDiagnostics(): String {
+        return try {
+            val runtime = Runtime.getRuntime()
+            val totalMemory = runtime.totalMemory() / 1024 / 1024
+            val freeMemory = runtime.freeMemory() / 1024 / 1024
+            val maxMemory = runtime.maxMemory() / 1024 / 1024
+            val usedMemory = totalMemory - freeMemory
+            val memoryUsage = ((usedMemory.toDouble() / maxMemory) * 100).toInt()
+            
+            val cacheStatus = "Cache: ${currentCacheSizeMB}MB/${maxCacheSizeMB}MB"
+            val memoryStatus = "Memory: ${usedMemory}MB/${maxMemory}MB (${memoryUsage}%)"
+            val timeStatus = "Uptime: ${(System.currentTimeMillis() - stateTransitionTime) / 1000}s"
+            val transitionStatus = "Transitions: $stateTransitionCount"
+            val errorStatus = "Consecutive errors: $consecutiveErrorCount"
+            
+            "[$memoryStatus] [$cacheStatus] [$timeStatus] [$transitionStatus] [$errorStatus]"
+        } catch (e: Exception) {
+            "Diagnostics failed: ${e.message}"
+        }
+    }
+    
+    // State Machine状態遷移エラーハンドリング
+    fun handleStateTransitionError(error: Exception, state: FileLoadingStateMachine.LoadingState) {
+        try {
+            println("ERROR: State transition error in ${state::class.simpleName}: ${error.message}")
+            
+            // エラーの種類に応じた対応
+            when {
+                error is OutOfMemoryError -> {
+                    println("CRITICAL: Out of memory error during state transition")
+                    emergencyCleanup("OutOfMemoryError in state transition")
+                }
+                
+                error.message?.contains("timeout", ignoreCase = true) == true -> {
+                    println("WARNING: Timeout error during state transition")
+                    clearAllStateAndMemory()
+                    stateMachine.processAction(
+                        FileLoadingStateMachine.LoadingAction.FilePreparationFailed(error)
+                    )
+                }
+                
+                error.message?.contains("resource", ignoreCase = true) == true -> {
+                    println("WARNING: Resource error during state transition")
+                    directZipHandler.clearMemoryCache()
+                    directZipHandler.closeCurrentZipFile()
+                    stateMachine.processAction(
+                        FileLoadingStateMachine.LoadingAction.FilePreparationFailed(error)
+                    )
+                }
+                
+                else -> {
+                    println("INFO: General error during state transition")
+                    stateMachine.processAction(
+                        FileLoadingStateMachine.LoadingAction.FilePreparationFailed(error)
+                    )
+                }
+            }
+            
+        } catch (handlingError: Exception) {
+            println("CRITICAL: Error handling failed: ${handlingError.message}")
+            emergencyCleanup("Error handling failure")
+        }
+    }
+    
+    // State Machine健全性チェック
+    fun performStateMachineHealthCheck(): Boolean {
+        return try {
+            val currentStateValue = stateMachine.currentState.value
+            val timeSinceLastTransition = System.currentTimeMillis() - stateTransitionTime
+            
+            // 健全性チェック項目
+            val checks = mutableListOf<Pair<String, Boolean>>()
+            
+            // 1. 状態が適切かチェック
+            checks.add("Valid state" to (currentStateValue != null))
+            
+            // 2. 長時間同じ状態にないかチェック
+            val stuckInState = timeSinceLastTransition > 60000 && // 1分以上同じ状態
+                               (currentStateValue is FileLoadingStateMachine.LoadingState.PreparingFile ||
+                                currentStateValue is FileLoadingStateMachine.LoadingState.CleaningResources)
+            checks.add("Not stuck in state" to !stuckInState)
+            
+            // 3. エラー頻度チェック
+            val tooManyErrors = consecutiveErrorCount > 2
+            checks.add("Error frequency OK" to !tooManyErrors)
+            
+            // 4. リソース状態チェック
+            val resourcesOK = checkResourceStatus() != "critical"
+            checks.add("Resources OK" to resourcesOK)
+            
+            // 5. 遷移回数チェック
+            val transitionRateOK = stateTransitionCount < 100 || 
+                                  (System.currentTimeMillis() - stateTransitionTime) > 1000
+            checks.add("Transition rate OK" to transitionRateOK)
+            
+            // 結果をログ出力
+            val failedChecks = checks.filter { !it.second }
+            if (failedChecks.isNotEmpty()) {
+                println("WARNING: State Machine health check failed:")
+                failedChecks.forEach { (name, _) ->
+                    println("  - $name")
+                }
+                return false
+            }
+            
+            println("DEBUG: State Machine health check passed")
+            return true
+            
+        } catch (e: Exception) {
+            println("ERROR: State Machine health check failed: ${e.message}")
+            false
+        }
+    }
     fun logCacheStatistics() {
         try {
             val runtime = Runtime.getRuntime()
@@ -250,46 +596,7 @@ fun MainScreen() {
         }
     }
 
-    // 緊急クリーンアップ関数（キャッシュサイズ制限対応版）
-    fun emergencyCleanup(reason: String = "Unknown") {
-        println("EMERGENCY: Starting emergency cleanup - Reason: $reason")
-        try {
-            // Phase 1: 即座に全てのコルーチンを停止
-            supervisorJob.cancel()
-            
-            // Phase 2: 画像キャッシュの強制クリア
-            println("EMERGENCY: Clearing image cache")
-            directZipHandler.clearMemoryCache()
-            currentCacheSizeMB = 0
-            
-            // Phase 3: ZIPファイルを閉じる
-            directZipHandler.closeCurrentZipFile()
-            
-            // Phase 4: State Machineを強制リセット
-            stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
-            
-            // Phase 5: UI状態をクリア
-            lastReadingProgress = null
-            fileCompletionUpdate = null
-            showTopBar = false
-            lastSavedPage = -1
-            lastSavedFileId = null
-            
-            // Phase 6: システムレベルの強制ガベージコレクション
-            System.gc()
-            System.runFinalization()
-            
-            // Phase 7: 緊急時はファイルリスト画面に戻る
-            currentView = ViewState.LocalFileList
-            
-            lastCacheCleanupTime = System.currentTimeMillis()
-            
-            println("EMERGENCY: Emergency cleanup completed")
-        } catch (e: Exception) {
-            println("CRITICAL: Emergency cleanup failed: ${e.message}")
-            e.printStackTrace()
-        }
-    }
+
 
     // 画像キャッシュサイズチェック関数
     fun checkAndLimitCacheSize(forceCleanup: Boolean = false): Boolean {
@@ -348,58 +655,150 @@ fun MainScreen() {
 
 
 
-    // State Machine状態変化の監視と処理（最適化版）
+    // State Machine状態変化の監視と処理（リソース管理強化版）
     LaunchedEffect(loadingState) {
-        // 状態変化時のみ実行し、重複処理を防ぐ
+        // 状態遷移の詳細ログと管理
         val currentState = loadingState
-        println("DEBUG: State Machine transition to: ${currentState::class.simpleName}")
+        val currentTime = System.currentTimeMillis()
+        val timeSinceLastTransition = if (stateTransitionTime > 0) currentTime - stateTransitionTime else 0
         
+        // 状態遷移のログ記録
+        println("=== STATE MACHINE TRANSITION ===")
+        println("Previous: ${previousState?.let { it::class.simpleName } ?: "None"}")
+        println("Current:  ${currentState::class.simpleName}")
+        println("Time since last transition: ${timeSinceLastTransition}ms")
+        println("Total transitions: ${++stateTransitionCount}")
+        println("================================")
+        
+        // 異常な状態遷移の検出
+        if (timeSinceLastTransition < 100 && previousState != null) {
+            println("WARNING: Rapid state transition detected (${timeSinceLastTransition}ms)")
+        }
+        
+        // 状態遷移時のリソース管理
+        when {
+            // 前の状態からのクリーンアップが必要な場合
+            previousState is FileLoadingStateMachine.LoadingState.PreparingFile && 
+            currentState !is FileLoadingStateMachine.LoadingState.PreparingFile -> {
+                println("DEBUG: Cleaning up from PreparingFile state")
+                try {
+                    // ファイル準備状態からの遷移時はリソースクリア
+                    directZipHandler.clearMemoryCache()
+                } catch (e: Exception) {
+                    println("ERROR: Failed to cleanup from PreparingFile state: ${e.message}")
+                }
+            }
+            
+            previousState is FileLoadingStateMachine.LoadingState.Ready && 
+            currentState !is FileLoadingStateMachine.LoadingState.Ready -> {
+                println("DEBUG: Cleaning up from Ready state")
+                try {
+                    // Ready状態からの遷移時は最終位置保存
+                    currentImageViewerState?.let { state ->
+                        if (pagerState.currentPage >= 0) {
+                            directZipHandler.saveCurrentPosition(
+                                state.currentZipUri,
+                                pagerState.currentPage,
+                                state.currentZipFile
+                            )
+                            println("DEBUG: Final position saved during state transition: ${pagerState.currentPage}")
+                        }
+                    }
+                } catch (e: Exception) {
+                    println("ERROR: Failed to cleanup from Ready state: ${e.message}")
+                }
+            }
+        }
+        
+        // 具体的な状態処理
         when (currentState) {
             is FileLoadingStateMachine.LoadingState.StoppingUI -> {
-                println("DEBUG: State Machine - UI Stopping")
-                // UI停止は即座に実行
-                stateMachine.processAction(FileLoadingStateMachine.LoadingAction.UIStoppedComplete)
+                println("DEBUG: State Machine - UI Stopping (Resource Management)")
+                try {
+                    // UI停止時のリソース状態確認
+                    val resourceStatus = checkResourceStatus()
+                    println("DEBUG: Resource status during UI stop: $resourceStatus")
+                    
+                    // UI停止完了を通知
+                    stateMachine.processAction(FileLoadingStateMachine.LoadingAction.UIStoppedComplete)
+                    
+                } catch (e: Exception) {
+                    println("ERROR: Error during UI stopping: ${e.message}")
+                    handleStateTransitionError(e, currentState)
+                }
             }
             
             is FileLoadingStateMachine.LoadingState.CleaningResources -> {
-                println("DEBUG: State Machine - Cleaning Resources")
-                // リソースクリーニングは一度だけ実行
+                println("DEBUG: State Machine - Cleaning Resources (Enhanced)")
                 mainScope.launch {
                     try {
-                        println("DEBUG: Clearing memory resources")
-                        withContext(Dispatchers.IO) {
-                            directZipHandler.clearMemoryCache()
-                            directZipHandler.closeCurrentZipFile()
-                        }
-                        println("DEBUG: Resources cleaned successfully")
+                        // リソースクリーニング前の状態記録
+                        val runtime = Runtime.getRuntime()
+                        val usedMemory = runtime.totalMemory() - runtime.freeMemory()
+                        val maxMemory = runtime.maxMemory()
+                        val memoryBefore = ((usedMemory.toDouble() / maxMemory) * 100).toInt()
+                        val cacheSizeBefore = currentCacheSizeMB
                         
+                        println("DEBUG: Resource state before cleaning - Memory: ${memoryBefore}%, Cache: ${cacheSizeBefore}MB")
+                        
+                        withContext(Dispatchers.IO) {
+                            // 段階的リソースクリーニング
+                            println("DEBUG: Phase 1 - Memory cache cleanup")
+                            directZipHandler.clearMemoryCache()
+                            currentCacheSizeMB = 0
+                            
+                            println("DEBUG: Phase 2 - File handle cleanup")
+                            directZipHandler.closeCurrentZipFile()
+                            
+                            println("DEBUG: Phase 3 - System garbage collection")
+                            System.gc()
+                        }
+                        
+                        // クリーニング後の状態確認
+                        val runtimeAfter = Runtime.getRuntime()
+                        val usedMemoryAfter = runtimeAfter.totalMemory() - runtimeAfter.freeMemory()
+                        val maxMemoryAfter = runtimeAfter.maxMemory()
+                        val memoryAfter = ((usedMemoryAfter.toDouble() / maxMemoryAfter) * 100).toInt()
+                        println("DEBUG: Resource state after cleaning - Memory: ${memoryAfter}% (reduced by ${memoryBefore - memoryAfter}%)")
+                        
+                        println("DEBUG: Resources cleaned successfully")
                         stateMachine.processAction(FileLoadingStateMachine.LoadingAction.ResourcesClearedComplete)
+                        
                     } catch (e: Exception) {
-                        println("DEBUG: Error during resource cleanup: ${e.message}")
+                        println("ERROR: Error during resource cleanup: ${e.message}")
                         e.printStackTrace()
-                        stateMachine.processAction(
-                            FileLoadingStateMachine.LoadingAction.FilePreparationFailed(e)
-                        )
+                        handleStateTransitionError(e, currentState)
                     }
                 }
             }
             
             is FileLoadingStateMachine.LoadingState.PreparingFile -> {
-                println("DEBUG: State Machine - Preparing File")
+                println("DEBUG: State Machine - Preparing File (Resource Managed)")
                 pendingRequest?.let { currentRequest ->
-                    // 同じリクエストの重複実行を防ぐ
+                    // リクエストの重複チェック
                     val requestKey = "${currentRequest.uri}_${currentRequest.file?.name}_${currentRequest.isNextFile}"
-                    println("DEBUG: Processing request: $requestKey")
+                    println("DEBUG: Processing request with resource management: $requestKey")
                     
                     mainScope.launch {
                         try {
-                            println("DEBUG: Opening ZIP file (state machine): ${currentRequest.file?.name ?: currentRequest.uri}")
+                            // ファイル準備前のリソース状態チェック
+                            val memoryCheck = checkMemoryAvailability(currentRequest)
+                            if (!memoryCheck.first) {
+                                throw Exception("Insufficient memory for file preparation: ${memoryCheck.second}")
+                            }
                             
-                            // Structured Concurrencyでタイムアウト処理を管理
+                            println("DEBUG: Memory check passed, proceeding with file preparation")
+                            
+                            // タイムアウト管理付きファイル準備
                             val preparationJob = launch {
+                                val startTime = System.currentTimeMillis()
+                                
                                 val imageEntryList = withContext(Dispatchers.IO) {
                                     directZipHandler.getImageEntriesFromZip(currentRequest.uri, currentRequest.file)
                                 }
+                                
+                                val preparationTime = System.currentTimeMillis() - startTime
+                                println("DEBUG: File preparation completed in ${preparationTime}ms")
                                 
                                 val newState = if (imageEntryList.isEmpty()) {
                                     println("DEBUG: No images found in ZIP")
@@ -427,21 +826,33 @@ fun MainScreen() {
                                         fileNavigationInfo = navigationInfo,
                                         initialPage = initialPage
                                     ).also {
-                                        println("DEBUG: ZIP file opened successfully - ${imageEntryList.size} images, initial page: $initialPage")
+                                        println("DEBUG: ZIP file prepared successfully - ${imageEntryList.size} images, initial page: $initialPage")
                                     }
                                 }
                                 
-                                println("DEBUG: Sending FilePreparationComplete action")
+                                // リソース使用量を再チェック
+                                val finalMemoryUsage = getMemoryUsage()
+                                println("DEBUG: Memory usage after file preparation: ${finalMemoryUsage}%")
+                                
                                 stateMachine.processAction(
                                     FileLoadingStateMachine.LoadingAction.FilePreparationComplete(newState)
                                 )
                             }
                             
-                            // タイムアウト処理も子コルーチンとして管理
+                            // 強化されたタイムアウト処理
                             val timeoutJob = launch {
                                 kotlinx.coroutines.delay(30000) // 30秒でタイムアウト
                                 println("ERROR: File preparation timeout for request: $requestKey")
                                 preparationJob.cancel() // 準備ジョブをキャンセル
+                                
+                                // タイムアウト時のリソースクリーンアップ
+                                try {
+                                    directZipHandler.clearMemoryCache()
+                                    directZipHandler.closeCurrentZipFile()
+                                } catch (cleanupError: Exception) {
+                                    println("ERROR: Cleanup during timeout failed: ${cleanupError.message}")
+                                }
+                                
                                 stateMachine.processAction(
                                     FileLoadingStateMachine.LoadingAction.FilePreparationFailed(
                                         Exception("File preparation timeout")
@@ -451,55 +862,82 @@ fun MainScreen() {
                             
                             // 準備が完了したらタイムアウトジョブをキャンセル
                             preparationJob.invokeOnCompletion { exception ->
-                                if (exception == null) {
-                                    timeoutJob.cancel()
+                                timeoutJob.cancel()
+                                if (exception != null && exception !is kotlinx.coroutines.CancellationException) {
+                                    println("ERROR: File preparation job failed: ${exception.message}")
                                 }
                             }
                             
                         } catch (e: Exception) {
-                            println("DEBUG: Error during file preparation: ${e.message}")
+                            println("ERROR: Exception during file preparation: ${e.message}")
                             e.printStackTrace()
-                            
-                            try {
-                                directZipHandler.closeCurrentZipFile()
-                                println("DEBUG: Error recovery - ZIP file closed")
-                            } catch (cleanupError: Exception) {
-                                println("DEBUG: Error during cleanup: ${cleanupError.message}")
-                            }
-                            
-                            stateMachine.processAction(
-                                FileLoadingStateMachine.LoadingAction.FilePreparationFailed(e)
-                            )
+                            handleStateTransitionError(e, currentState)
                         }
                     }
                 }
             }
             
             is FileLoadingStateMachine.LoadingState.Ready -> {
-                println("DEBUG: State Machine - Ready with new file")
-                currentView = ViewState.ImageViewer
+                println("DEBUG: State Machine - Ready (Resource Optimized)")
+                try {
+                    // Ready状態での最終リソースチェック
+                    val finalResourceStatus = checkResourceStatus()
+                    println("DEBUG: Final resource status in Ready state: $finalResourceStatus")
+                    
+                    currentView = ViewState.ImageViewer
+                    consecutiveErrorCount = 0 // エラーカウントリセット
+                    
+                } catch (e: Exception) {
+                    println("ERROR: Error in Ready state: ${e.message}")
+                    handleStateTransitionError(e, currentState)
+                }
             }
             
             is FileLoadingStateMachine.LoadingState.Error -> {
-                println("DEBUG: State Machine - Error: ${currentState.message}")
+                println("DEBUG: State Machine - Error (Enhanced Recovery)")
                 currentState.throwable?.printStackTrace()
                 
-                // エラー時の自動クリーンアップ（一度だけ実行）
+                consecutiveErrorCount++
+                lastErrorRecoveryTime = currentTime
+                
                 try {
-                    println("DEBUG: Performing automatic cleanup due to error")
-                    clearAllStateAndMemory()
+                    println("DEBUG: Performing enhanced error recovery (attempt ${consecutiveErrorCount})")
+                    
+                    // エラー時のリソース状態診断
+                    val resourceDiagnostics = performResourceDiagnostics()
+                    println("DEBUG: Resource diagnostics: $resourceDiagnostics")
+                    
+                    // 連続エラーの場合は段階的対応
+                    when {
+                        consecutiveErrorCount >= 3 -> {
+                            println("CRITICAL: Multiple consecutive errors, performing emergency cleanup")
+                            emergencyCleanup("Multiple consecutive State Machine errors")
+                        }
+                        
+                        consecutiveErrorCount >= 2 -> {
+                            println("WARNING: Repeated errors, performing comprehensive cleanup")
+                            clearAllStateAndMemory()
+                        }
+                        
+                        else -> {
+                            println("INFO: Single error, performing standard cleanup")
+                            clearAllStateAndMemory()
+                        }
+                    }
                     
                     // エラーが重大な場合は緊急クリーンアップ
                     val errorMessage = currentState.message.lowercase()
                     if (errorMessage.contains("memory") || 
                         errorMessage.contains("timeout") || 
-                        errorMessage.contains("crash")) {
+                        errorMessage.contains("crash") ||
+                        errorMessage.contains("resource")) {
                         println("WARNING: Critical error detected, performing emergency cleanup")
-                        emergencyCleanup("Critical error: ${currentState.message}")
+                        emergencyCleanup("Critical State Machine error: ${currentState.message}")
                     }
+                    
                 } catch (cleanupError: Exception) {
                     println("ERROR: Cleanup during error handling failed: ${cleanupError.message}")
-                    emergencyCleanup("Cleanup failure during error handling")
+                    emergencyCleanup("Error recovery failure")
                 }
                 
                 currentView = ViewState.LocalFileList
@@ -507,36 +945,81 @@ fun MainScreen() {
             }
             
             is FileLoadingStateMachine.LoadingState.Idle -> {
-                // Idle状態では何もしない（ログのみ）
-                println("DEBUG: State Machine - Idle")
+                println("DEBUG: State Machine - Idle (Resource Monitoring)")
+                try {
+                    // Idle状態でのリソース監視
+                    if (timeSinceLastTransition > 10000) { // 10秒以上Idle
+                        val resourceStatus = checkResourceStatus()
+                        if (resourceStatus.contains("high")) {
+                            println("INFO: High resource usage detected in Idle state, performing maintenance")
+                            directZipHandler.clearMemoryCache()
+                            currentCacheSizeMB = 0
+                        }
+                    }
+                } catch (e: Exception) {
+                    println("ERROR: Error in Idle state monitoring: ${e.message}")
+                }
             }
         }
+        
+        // 状態遷移の記録を更新
+        previousState = currentState
+        stateTransitionTime = currentTime
     }
 
 
 
-    // ファイルナビゲーション処理（強化されたクリーンアップ対応版）
+    // ファイルナビゲーション処理（State Machine管理強化版）
     fun navigateToZipFile(newZipFile: File, isNextFile: Boolean = false) {
         println("DEBUG: Starting navigation to new file: ${newZipFile.name} (isNextFile: $isNextFile)")
         
         mainScope.launch {
             try {
-                // ファイル切り替え前の包括的リソースクリア
-                println("DEBUG: Performing comprehensive resource cleanup before navigation")
-                
-                // Phase 1: 現在のファイル状態を保存
-                currentImageViewerState?.let { state ->
-                    if (pagerState.currentPage >= 0) {
-                        directZipHandler.saveCurrentPosition(
-                            state.currentZipUri,
-                            pagerState.currentPage,
-                            state.currentZipFile
-                        )
-                        println("DEBUG: Current position saved before navigation: ${pagerState.currentPage}")
+                // Phase 1: State Machine状態チェック
+                val currentState = stateMachine.currentState.value
+                if (stateMachine.isLoading()) {
+                    println("WARNING: Navigation attempted while State Machine is loading, waiting...")
+                    // 最大5秒待機
+                    var waitTime = 0
+                    while (stateMachine.isLoading() && waitTime < 5000) {
+                        kotlinx.coroutines.delay(100)
+                        waitTime += 100
+                    }
+                    
+                    if (stateMachine.isLoading()) {
+                        println("ERROR: State Machine still loading after timeout, forcing reset")
+                        stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+                        kotlinx.coroutines.delay(100)
                     }
                 }
                 
-                // Phase 2: IO処理でリソースクリア + キャッシュサイズチェック
+                // Phase 2: 現在のファイル状態を保存
+                currentImageViewerState?.let { state ->
+                    if (pagerState.currentPage >= 0) {
+                        try {
+                            directZipHandler.saveCurrentPosition(
+                                state.currentZipUri,
+                                pagerState.currentPage,
+                                state.currentZipFile
+                            )
+                            println("DEBUG: Current position saved before navigation: ${pagerState.currentPage}")
+                        } catch (e: Exception) {
+                            println("ERROR: Failed to save position before navigation: ${e.message}")
+                        }
+                    }
+                }
+                
+                // Phase 3: リソース状態チェックと準備
+                val resourceStatus = checkResourceStatus()
+                println("DEBUG: Resource status before navigation: $resourceStatus")
+                
+                if (resourceStatus == "critical") {
+                    println("WARNING: Critical resource usage, performing pre-navigation cleanup")
+                    clearAllStateAndMemory()
+                    kotlinx.coroutines.delay(500) // クリーンアップ完了を待つ
+                }
+                
+                // Phase 4: IO処理でリソースクリア + キャッシュサイズチェック
                 withContext(Dispatchers.IO) {
                     try {
                         // キャッシュサイズ制限チェック
@@ -551,24 +1034,28 @@ fun MainScreen() {
                     }
                 }
                 
-                // Phase 3: ガベージコレクション
+                // Phase 5: ガベージコレクション
                 System.gc()
                 
-                // Phase 4: メモリ使用量チェック
-                val runtime = Runtime.getRuntime()
-                val usedMemory = runtime.totalMemory() - runtime.freeMemory()
-                val maxMemory = runtime.maxMemory()
-                val memoryUsagePercent = (usedMemory.toDouble() / maxMemory * 100).toInt()
-                
-                if (memoryUsagePercent > 80) {
-                    println("WARNING: High memory usage before navigation: ${memoryUsagePercent}%")
+                // Phase 6: メモリ使用量最終チェック
+                val memoryUsage = getMemoryUsage()
+                if (memoryUsage > 80) {
+                    println("WARNING: High memory usage before navigation: ${memoryUsage}%")
                     // 追加のクリーンアップ
                     directZipHandler.clearMemoryCache()
                     System.gc()
                     kotlinx.coroutines.delay(100) // GCの完了を待つ
+                    
+                    val finalMemoryUsage = getMemoryUsage()
+                    if (finalMemoryUsage > 85) {
+                        println("ERROR: Memory usage still critical after cleanup: ${finalMemoryUsage}%")
+                        emergencyCleanup("Critical memory usage before navigation")
+                        return@launch
+                    }
                 }
                 
-                println("DEBUG: Starting state machine action for: ${newZipFile.name}")
+                // Phase 7: State Machine動作開始
+                println("DEBUG: Starting State Machine action for: ${newZipFile.name}")
                 val success = stateMachine.processAction(
                     FileLoadingStateMachine.LoadingAction.StartLoading(
                         Uri.fromFile(newZipFile), 
@@ -578,9 +1065,18 @@ fun MainScreen() {
                 )
                 
                 if (!success) {
-                    println("ERROR: Failed to start navigation - state machine rejected action")
-                    // State Machineが処理を受け付けない場合の復旧処理
-                    println("DEBUG: Attempting recovery with cleanup and reset")
+                    println("ERROR: Failed to start navigation - State Machine rejected action")
+                    // State Machine復旧処理
+                    println("DEBUG: Attempting State Machine recovery")
+                    
+                    // 健全性チェック
+                    val isHealthy = performStateMachineHealthCheck()
+                    if (!isHealthy) {
+                        println("WARNING: State Machine unhealthy, performing reset")
+                        emergencyCleanup("State Machine unhealthy during navigation")
+                        return@launch
+                    }
+                    
                     clearAllStateAndMemory()
                     kotlinx.coroutines.delay(100)
                     
@@ -600,29 +1096,51 @@ fun MainScreen() {
                         emergencyCleanup("Navigation failure after recovery")
                     }
                 }
+                
             } catch (e: Exception) {
                 println("ERROR: Exception during file navigation: ${e.message}")
                 e.printStackTrace()
                 
-                // エラー発生時の緊急対応
+                // エラー発生時の包括的対応
                 try {
-                    clearAllStateAndMemory()
-                    stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+                    handleStateTransitionError(e, stateMachine.currentState.value)
                 } catch (recoveryError: Exception) {
-                    println("CRITICAL: Recovery failed: ${recoveryError.message}")
+                    println("CRITICAL: Navigation error recovery failed: ${recoveryError.message}")
                     emergencyCleanup("Navigation exception with recovery failure")
                 }
             }
         }
     }
 
-    // ファイル読み込み開始処理（強化されたクリーンアップ対応版）
+    // ファイル読み込み開始処理（State Machine管理強化版）
     fun startFileLoading(uri: Uri, file: File? = null) {
         println("DEBUG: Starting file loading: ${file?.name ?: uri}")
         
         mainScope.launch {
             try {
-                // ファイル読み込み前の予防的クリーンアップ
+                // Phase 1: State Machine準備状態チェック
+                val currentState = stateMachine.currentState.value
+                println("DEBUG: Current State Machine state before loading: ${currentState::class.simpleName}")
+                
+                if (stateMachine.isLoading()) {
+                    println("WARNING: File loading attempted while State Machine is busy")
+                    // 少し待ってから再試行
+                    kotlinx.coroutines.delay(500)
+                    if (stateMachine.isLoading()) {
+                        println("ERROR: State Machine still busy, aborting file loading")
+                        return@launch
+                    }
+                }
+                
+                // Phase 2: メモリ可用性の事前チェック
+                val memoryCheck = checkMemoryAvailability(uri)
+                if (!memoryCheck.first) {
+                    println("ERROR: ${memoryCheck.second}")
+                    emergencyCleanup("Insufficient memory for file loading")
+                    return@launch
+                }
+                
+                // Phase 3: ファイル読み込み前の予防的クリーンアップ
                 println("DEBUG: Performing preventive cleanup before file loading")
                 
                 // 現在のリソースをクリア + キャッシュサイズチェック
@@ -634,39 +1152,44 @@ fun MainScreen() {
                     directZipHandler.closeCurrentZipFile()
                 }
                 
-                // メモリ状況をチェック
-                val runtime = Runtime.getRuntime()
-                val usedMemory = runtime.totalMemory() - runtime.freeMemory()
-                val maxMemory = runtime.maxMemory()
-                val memoryUsagePercent = (usedMemory.toDouble() / maxMemory * 100).toInt()
+                // Phase 4: メモリ状況の最終確認
+                val memoryUsage = getMemoryUsage()
+                println("DEBUG: Memory usage before loading: ${memoryUsage}%")
                 
-                println("DEBUG: Memory usage before loading: ${memoryUsagePercent}%")
-                
-                if (memoryUsagePercent > 75) {
+                if (memoryUsage > 75) {
                     println("WARNING: High memory usage detected, performing aggressive cleanup")
                     System.gc()
                     kotlinx.coroutines.delay(100)
                     
-                    val newUsedMemory = runtime.totalMemory() - runtime.freeMemory()
-                    val newMemoryUsagePercent = (newUsedMemory.toDouble() / maxMemory * 100).toInt()
-                    println("DEBUG: Memory usage after cleanup: ${newMemoryUsagePercent}%")
+                    val newMemoryUsage = getMemoryUsage()
+                    println("DEBUG: Memory usage after cleanup: ${newMemoryUsage}%")
                     
-                    if (newMemoryUsagePercent > 85) {
+                    if (newMemoryUsage > 85) {
                         println("ERROR: Memory usage still critical, aborting file loading")
                         emergencyCleanup("Critical memory usage before file loading")
                         return@launch
                     }
                 }
                 
-                println("DEBUG: Starting state machine action for file loading")
+                // Phase 5: State Machine健全性チェック
+                val isHealthy = performStateMachineHealthCheck()
+                if (!isHealthy) {
+                    println("WARNING: State Machine unhealthy before file loading")
+                    stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+                    kotlinx.coroutines.delay(100)
+                }
+                
+                // Phase 6: State Machine動作開始
+                println("DEBUG: Starting State Machine action for file loading")
                 val success = stateMachine.processAction(
                     FileLoadingStateMachine.LoadingAction.StartLoading(uri, file, isNextFile = false)
                 )
                 
                 if (!success) {
-                    println("ERROR: Failed to start file loading - state machine rejected action")
+                    println("ERROR: Failed to start file loading - State Machine rejected action")
                     // 復旧処理
                     println("DEBUG: Attempting recovery for file loading")
+                    
                     clearAllStateAndMemory()
                     kotlinx.coroutines.delay(100)
                     
@@ -682,16 +1205,16 @@ fun MainScreen() {
                         emergencyCleanup("File loading failure after recovery")
                     }
                 }
+                
             } catch (e: Exception) {
                 println("ERROR: Exception during file loading: ${e.message}")
                 e.printStackTrace()
                 
-                // エラー発生時の緊急対応
+                // エラー発生時の包括的対応
                 try {
-                    clearAllStateAndMemory()
-                    stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
+                    handleStateTransitionError(e, stateMachine.currentState.value)
                 } catch (recoveryError: Exception) {
-                    println("CRITICAL: File loading recovery failed: ${recoveryError.message}")
+                    println("CRITICAL: File loading error recovery failed: ${recoveryError.message}")
                     emergencyCleanup("File loading exception with recovery failure")
                 }
             }
@@ -801,17 +1324,91 @@ fun MainScreen() {
         }
     }
 
-    // StateMachine専用のクリーンアップ
+    // StateMachine専用のクリーンアップ（強化版）
     DisposableEffect(stateMachine) {
         onDispose {
-            println("DEBUG: StateMachine disposing")
+            println("DEBUG: StateMachine disposing - performing comprehensive cleanup")
             try {
+                // Phase 1: 現在の状態を記録
+                val finalState = stateMachine.currentState.value
+                println("DEBUG: Final State Machine state: ${finalState::class.simpleName}")
+                
+                // Phase 2: 統計情報の出力
+                println("=== STATE MACHINE FINAL STATISTICS ===")
+                println("Total state transitions: $stateTransitionCount")
+                println("Consecutive errors: $consecutiveErrorCount")
+                println("Final resource diagnostics: ${performResourceDiagnostics()}")
+                println("=====================================")
+                
+                // Phase 3: エラー状態の場合は追加ログ
+                if (finalState is FileLoadingStateMachine.LoadingState.Error) {
+                    println("WARNING: StateMachine disposed in error state: ${finalState.message}")
+                }
+                
+                // Phase 4: State Machineリセット
                 stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
-                println("DEBUG: StateMachine cleanup completed")
+                
+                // Phase 5: 状態管理変数のクリア
+                previousState = null
+                stateTransitionCount = 0
+                consecutiveErrorCount = 0
+                
+                println("DEBUG: StateMachine comprehensive cleanup completed")
             } catch (e: Exception) {
                 println("ERROR: StateMachine cleanup failed: ${e.message}")
                 e.printStackTrace()
             }
+        }
+    }
+
+    // State Machine健全性監視
+    DisposableEffect(stateTransitionCount) {
+        val healthMonitorJob = mainScope.launch {
+            while (true) {
+                try {
+                    kotlinx.coroutines.delay(30000) // 30秒ごとに健全性チェック
+                    
+                    val isHealthy = performStateMachineHealthCheck()
+                    if (!isHealthy) {
+                        println("WARNING: State Machine health check failed, performing corrective action")
+                        
+                        // 健全性に問題がある場合の対応
+                        val currentState = stateMachine.currentState.value
+                        when {
+                            consecutiveErrorCount > 2 -> {
+                                println("ACTION: Too many consecutive errors, performing reset")
+                                mainScope.launch {
+                                    emergencyCleanup("State Machine health: too many errors")
+                                }
+                            }
+                            
+                            currentState is FileLoadingStateMachine.LoadingState.PreparingFile && 
+                            (System.currentTimeMillis() - stateTransitionTime) > 60000 -> {
+                                println("ACTION: Stuck in PreparingFile state, forcing timeout")
+                                stateMachine.processAction(
+                                    FileLoadingStateMachine.LoadingAction.FilePreparationFailed(
+                                        Exception("Forced timeout due to stuck state")
+                                    )
+                                )
+                            }
+                            
+                            checkResourceStatus() == "critical" -> {
+                                println("ACTION: Critical resource usage, performing cleanup")
+                                clearAllStateAndMemory()
+                            }
+                        }
+                    }
+                    
+                } catch (e: Exception) {
+                    println("ERROR: State Machine health monitoring failed: ${e.message}")
+                    break
+                }
+            }
+        }
+        
+        onDispose {
+            println("DEBUG: State Machine health monitor disposing")
+            healthMonitorJob.cancel()
         }
     }
 
@@ -970,7 +1567,9 @@ fun MainScreen() {
                     when {
                         systemMemoryInfo.third > 90 -> {
                             println("CRITICAL: System memory critical!")
-                            emergencyCleanup("System memory critical: ${systemMemoryInfo.third}%")
+                            mainScope.launch {
+                                emergencyCleanup("System memory critical: ${systemMemoryInfo.third}%")
+                            }
                             break
                         }
                         
