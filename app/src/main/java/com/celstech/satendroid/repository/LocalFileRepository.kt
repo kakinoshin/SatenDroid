@@ -4,19 +4,21 @@ import android.content.Context
 import android.os.Environment
 import com.celstech.satendroid.ui.models.LocalItem
 import com.celstech.satendroid.utils.LocalItemFactory
-import com.celstech.satendroid.utils.ReadingStatusManager
+import com.celstech.satendroid.utils.UnifiedReadingDataManager
+import com.celstech.satendroid.utils.ReadingProgress
+import com.celstech.satendroid.ui.models.ReadingStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
  * ローカルファイル操作を担当するRepository
- * サムネイル生成と読書状況管理機能を統合
+ * 統一データ管理システムによる読書状況管理
  */
 class LocalFileRepository(private val context: Context) {
 
     private val localItemFactory = LocalItemFactory(context)
-    private val readingStatusManager = ReadingStatusManager(context)
+    private val unifiedDataManager = UnifiedReadingDataManager(context)
 
     /**
      * 指定されたパスのディレクトリをスキャンしてLocalItemリストを取得
@@ -64,8 +66,9 @@ class LocalFileRepository(private val context: Context) {
         try {
             val success = item.file.delete()
             if (success) {
-                // 読書状況もクリア
-                localItemFactory.clearReadingStatusForFile(item.path)
+                // 統一データ管理システムで読書状況をクリア
+                unifiedDataManager.clearReadingData(item.file.absolutePath)
+                println("DEBUG: Repository cleared reading data for deleted file: ${item.name}")
             }
             success
         } catch (e: Exception) {
@@ -119,14 +122,88 @@ class LocalFileRepository(private val context: Context) {
     }
 
     /**
-     * ZipFileの読書状況を更新
+     * ZipFileの読書状況を更新（統一データ管理システム使用）
      */
     suspend fun updateReadingStatus(
         zipFile: LocalItem.ZipFile,
-        currentIndex: Int,
-        totalCount: Int? = null
-    ): LocalItem.ZipFile {
-        return localItemFactory.updateReadingStatus(zipFile, currentIndex, totalCount)
+        currentIndex: Int
+    ) {
+        println("DEBUG: Repository.updateReadingStatus called")
+        println("DEBUG:   File: ${zipFile.name}")
+        println("DEBUG:   File Path: ${zipFile.file.absolutePath}")
+        println("DEBUG:   Current Index: $currentIndex")
+        println("DEBUG:   ZipFile.totalImageCount: ${zipFile.totalImageCount}")
+        
+        // 統一データ管理システムで位置と状況を同時更新
+        unifiedDataManager.saveReadingPosition(
+            filePath = zipFile.file.absolutePath,
+            position = currentIndex,
+            totalImages = zipFile.totalImageCount
+        )
+        
+        // 総画像数も保存（LocalItemFactoryで取得した値を保持）
+        unifiedDataManager.saveTotalImages(
+            filePath = zipFile.file.absolutePath,
+            totalImages = zipFile.totalImageCount
+        )
+        
+        // 保存後の確認
+        val savedStatus = unifiedDataManager.getReadingStatusSync(zipFile.file.absolutePath)
+        val savedPosition = unifiedDataManager.getReadingPositionSync(zipFile.file.absolutePath)
+        
+        println("DEBUG: Repository - After update verification:")
+        println("DEBUG:   Saved Status: $savedStatus")
+        println("DEBUG:   Saved Position: $savedPosition")
+        println("DEBUG:   Total Images: ${zipFile.totalImageCount}")
+    }
+    
+    /**
+     * 読書位置を取得
+     */
+    suspend fun getReadingPosition(filePath: String): Int {
+        return unifiedDataManager.getReadingPosition(filePath)
+    }
+    
+    /**
+     * 読書位置を同期的に取得（UI用）
+     */
+    fun getReadingPositionSync(filePath: String): Int {
+        return unifiedDataManager.getReadingPositionSync(filePath)
+    }
+    
+    /**
+     * 読書状況を取得
+     */
+    suspend fun getReadingStatus(filePath: String): ReadingStatus {
+        return unifiedDataManager.getReadingStatus(filePath)
+    }
+    
+    /**
+     * 読書状況を同期的に取得（UI用）
+     */
+    fun getReadingStatusSync(filePath: String): ReadingStatus {
+        return unifiedDataManager.getReadingStatusSync(filePath)
+    }
+    
+    /**
+     * 読書進捗情報を取得
+     */
+    suspend fun getReadingProgress(filePath: String): ReadingProgress {
+        return unifiedDataManager.getReadingProgress(filePath)
+    }
+    
+    /**
+     * 読書進捗情報を同期的に取得（UI用）
+     */
+    fun getReadingProgressSync(filePath: String): ReadingProgress {
+        return unifiedDataManager.getReadingProgressSync(filePath)
+    }
+    
+    /**
+     * 総画像数を取得
+     */
+    fun getTotalImages(filePath: String): Int {
+        return unifiedDataManager.getTotalImages(filePath)
     }
 
     /**
@@ -137,7 +214,8 @@ class LocalFileRepository(private val context: Context) {
             folder.walk()
                 .filter { it.isFile && it.extension.lowercase() == "zip" }
                 .forEach { zipFile ->
-                    localItemFactory.clearReadingStatusForFile(zipFile.absolutePath)
+                    unifiedDataManager.clearReadingData(zipFile.absolutePath)
+                    println("DEBUG: Repository cleared reading data for folder file: ${zipFile.name}")
                 }
         } catch (e: Exception) {
             println("DEBUG: Failed to clear reading status for folder: ${e.message}")
@@ -192,13 +270,23 @@ class LocalFileRepository(private val context: Context) {
         else 
             "$path/${child.name}"
         
+        println("DEBUG: Processing ZIP file: ${child.absolutePath}")
+        
         // LocalItemFactoryを使用してサムネイル等を含むZipFileアイテムを作成
         val zipFileItem = localItemFactory.createZipFileItem(
             file = child,
             relativePath = relativePath
         )
         
-        println("DEBUG: Created ZipFile item - Name: ${zipFileItem.name}, Status: ${zipFileItem.readingStatus}, Index: ${zipFileItem.currentImageIndex}/${zipFileItem.totalImageCount}")
+        // 統一データ管理システムに総画像数を保存
+        if (zipFileItem.totalImageCount > 0) {
+            unifiedDataManager.saveTotalImages(
+                filePath = child.absolutePath,
+                totalImages = zipFileItem.totalImageCount
+            )
+        }
+        
+        println("DEBUG: Processed ZIP file: ${child.name}, totalImageCount: ${zipFileItem.totalImageCount}")
         
         return zipFileItem
     }

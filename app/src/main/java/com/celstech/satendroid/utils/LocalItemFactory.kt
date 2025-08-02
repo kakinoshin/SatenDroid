@@ -14,6 +14,46 @@ class LocalItemFactory(private val context: Context) {
     
     private val readingStatusManager = ReadingStatusManager(context)
     
+    // 画像数のキャッシュ (ファイルパス -> 画像数)
+    private val imageCountCache = mutableMapOf<String, Pair<Long, Int>>() // (lastModified, imageCount)
+    
+    companion object {
+        private const val IMAGE_COUNT_CACHE_PREFS = "image_count_cache"
+        private const val CACHE_PREFIX = "count_"
+        private const val CACHE_TIME_PREFIX = "time_"
+    }
+    
+    /**
+     * キャッシュされた画像数を取得
+     */
+    private fun getCachedImageCount(file: File): Int? {
+        val prefs = context.getSharedPreferences(IMAGE_COUNT_CACHE_PREFS, Context.MODE_PRIVATE)
+        val key = file.absolutePath
+        val cachedTime = prefs.getLong(CACHE_TIME_PREFIX + key, 0)
+        val cachedCount = prefs.getInt(CACHE_PREFIX + key, -1)
+        
+        return if (cachedTime == file.lastModified() && cachedCount >= 0) {
+            println("DEBUG: Using cached image count for ${file.name}: $cachedCount")
+            cachedCount
+        } else {
+            null
+        }
+    }
+    
+    /**
+     * 画像数をキャッシュに保存
+     */
+    private fun saveCachedImageCount(file: File, count: Int) {
+        val prefs = context.getSharedPreferences(IMAGE_COUNT_CACHE_PREFS, Context.MODE_PRIVATE)
+        val key = file.absolutePath
+        prefs.edit().apply {
+            putLong(CACHE_TIME_PREFIX + key, file.lastModified())
+            putInt(CACHE_PREFIX + key, count)
+            apply()
+        }
+        println("DEBUG: Cached image count for ${file.name}: $count")
+    }
+    
     /**
      * ファイルからLocalItemを作成（汎用メソッド）
      */
@@ -64,17 +104,13 @@ class LocalItemFactory(private val context: Context) {
         file: File, 
         relativePath: String
     ): LocalItem.ZipFile = withContext(Dispatchers.IO) {
+        println("DEBUG: Creating ZipFileItem for: ${file.name}")
+        
         // 順次実行（並行処理を避けてエラーを回避）
         val thumbnail = ThumbnailGenerator.generateThumbnail(file)
-        
-        // デバッグ: 読書状態取得に使用するパスを確認
-        val filePathForReading = file.absolutePath
-        println("DEBUG: Reading status path for '${file.name}': $filePathForReading")
-        
-        val readingProgress = readingStatusManager.getReadingProgress(filePathForReading)
-        println("DEBUG: Reading status for '${file.name}': ${readingProgress.status}")
-        
         val imageCount = getImageCountInZip(file)
+        
+        println("DEBUG: ZipFileItem created - File: ${file.name}, ImageCount: $imageCount")
         
         LocalItem.ZipFile(
             name = file.name,
@@ -82,9 +118,7 @@ class LocalItemFactory(private val context: Context) {
             lastModified = file.lastModified(),
             size = file.length(),
             file = file,
-            readingStatus = readingProgress.status,
             thumbnail = thumbnail,
-            currentImageIndex = readingProgress.currentIndex,
             totalImageCount = imageCount
         )
     }
@@ -93,11 +127,49 @@ class LocalItemFactory(private val context: Context) {
      * ZIPファイル内の画像数を取得
      */
     private suspend fun getImageCountInZip(file: File): Int = withContext(Dispatchers.IO) {
+        // キャッシュから取得を試行
+        val cachedCount = getCachedImageCount(file)
+        if (cachedCount != null) {
+            return@withContext cachedCount
+        }
+        
         try {
+            println("DEBUG: Counting images in ZIP: ${file.absolutePath}")
+            
+            // ファイルの基本検証
+            if (!file.exists()) {
+                println("DEBUG: File does not exist: ${file.absolutePath}")
+                return@withContext 0
+            }
+            
+            if (!file.canRead()) {
+                println("DEBUG: Cannot read file: ${file.absolutePath}")
+                return@withContext 0
+            }
+            
+            if (file.length() == 0L) {
+                println("DEBUG: File is empty: ${file.absolutePath}")
+                return@withContext 0
+            }
+            
             val imageExtensions = setOf("jpg", "jpeg", "png", "gif", "bmp", "webp")
             
             java.util.zip.ZipFile(file).use { zipFile ->
-                zipFile.entries().asSequence()
+                var totalEntries = 0
+                var imageEntries = 0
+                
+                val imageCount = zipFile.entries().asSequence()
+                    .onEach { entry -> 
+                        totalEntries++
+                        if (!entry.isDirectory) {
+                            val fileName = entry.name.substringAfterLast('/')
+                            val fileExtension = fileName.substringAfterLast('.', "").lowercase()
+                            if (fileExtension in imageExtensions) {
+                                imageEntries++
+                                println("DEBUG: Found image entry: ${entry.name}")
+                            }
+                        }
+                    }
                     .filter { entry ->
                         if (entry.isDirectory) return@filter false
                         val fileName = entry.name.substringAfterLast('/')
@@ -105,49 +177,52 @@ class LocalItemFactory(private val context: Context) {
                         fileExtension in imageExtensions
                     }
                     .count()
+                
+                println("DEBUG: ZIP ${file.name} - Total entries: $totalEntries, Image entries: $imageEntries, Final count: $imageCount")
+                
+                // キャッシュに保存
+                saveCachedImageCount(file, imageCount)
+                
+                imageCount
             }
+        } catch (e: java.util.zip.ZipException) {
+            println("DEBUG: Invalid ZIP file ${file.name}: ${e.message}")
+            e.printStackTrace()
+            0
+        } catch (e: SecurityException) {
+            println("DEBUG: Security error accessing ${file.name}: ${e.message}")
+            e.printStackTrace()
+            0
         } catch (e: Exception) {
+            println("DEBUG: Error counting images in ${file.name}: ${e.message}")
             e.printStackTrace()
             0
         }
     }
     
     /**
-     * LocalItem.ZipFileの読書状況を更新
+     * ZIPファイルの読書状況を更新
      */
     suspend fun updateReadingStatus(
         zipFile: LocalItem.ZipFile,
-        currentIndex: Int,
-        totalCount: Int? = null
-    ): LocalItem.ZipFile {
-        val actualTotalCount = totalCount ?: zipFile.totalImageCount
+        currentIndex: Int
+    ) {
         val filePathForReading = zipFile.file.absolutePath
         
-        println("DEBUG: Updating reading status - File: ${zipFile.name}, Path: $filePathForReading, Index: $currentIndex, Total: $actualTotalCount")
-        
-        val newStatus = when {
+        when {
             // 最後の画像まで見た場合は「既読」
-            currentIndex >= actualTotalCount - 1 && actualTotalCount > 0 -> {
-                readingStatusManager.markAsCompleted(filePathForReading, actualTotalCount)
-                com.celstech.satendroid.ui.models.ReadingStatus.COMPLETED
+            currentIndex >= zipFile.totalImageCount - 1 && zipFile.totalImageCount > 0 -> {
+                readingStatusManager.markAsCompleted(filePathForReading, currentIndex)
             }
             // 1枚でも画像を見た場合、または明示的に読書開始した場合は「読書中」
-            currentIndex >= 0 && actualTotalCount > 0 -> {
-                readingStatusManager.markAsReading(filePathForReading, currentIndex, actualTotalCount)
-                com.celstech.satendroid.ui.models.ReadingStatus.READING
+            currentIndex >= 0 && zipFile.totalImageCount > 0 -> {
+                readingStatusManager.markAsReading(filePathForReading, currentIndex)
             }
             // その他の場合は「未読」
             else -> {
                 readingStatusManager.markAsUnread(filePathForReading)
-                com.celstech.satendroid.ui.models.ReadingStatus.UNREAD
             }
         }
-        
-        return zipFile.copy(
-            readingStatus = newStatus,
-            currentImageIndex = currentIndex,
-            totalImageCount = actualTotalCount
-        )
     }
     
     /**

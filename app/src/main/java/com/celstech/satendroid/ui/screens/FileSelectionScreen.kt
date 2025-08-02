@@ -60,7 +60,7 @@ fun FileSelectionScreen(
     )
     val uiState by viewModel.uiState.collectAsState()
 
-    // Scan for files on first load
+    // 統一データ管理システムで初期化と読み込み
     LaunchedEffect(Unit) {
         viewModel.scanDirectory(initialPath)
     }
@@ -83,9 +83,7 @@ fun FileSelectionScreen(
             } as? LocalItem.ZipFile
 
             if (zipFileItem != null) {
-                // 画像の総数を取得（ファイルから新たに取得）
-                val totalImages = zipFileItem.totalImageCount
-                viewModel.updateReadingStatus(zipFileItem, currentPage, totalImages)
+                viewModel.updateReadingStatus(zipFileItem, currentPage)
                 println("DEBUG: Reading status updated successfully")
             } else {
                 println("DEBUG: Could not find LocalItem.ZipFile for ${file.name}")
@@ -106,7 +104,7 @@ fun FileSelectionScreen(
                 // 最後のページまで読んだとして既読にマーク
                 val lastPage =
                     if (zipFileItem.totalImageCount > 0) zipFileItem.totalImageCount - 1 else 0
-                viewModel.updateReadingStatus(zipFileItem, lastPage, zipFileItem.totalImageCount)
+                viewModel.updateReadingStatus(zipFileItem, lastPage)
                 println("DEBUG: File marked as completed successfully")
             } else {
                 println("DEBUG: Could not find LocalItem.ZipFile for completion marking: ${file.name}")
@@ -342,6 +340,7 @@ fun FileSelectionScreen(
                     ) { item ->
                         LocalItemCard(
                             item = item,
+                            viewModel = viewModel,
                             isSelected = uiState.selectedItems.contains(item),
                             isSelectionMode = uiState.isSelectionMode,
                             onClick = {

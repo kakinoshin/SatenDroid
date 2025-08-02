@@ -25,13 +25,35 @@ class ZipImageFetcherNew(
         try {
             // 高速化されたDirectZipImageHandlerを使用
             val imageData = zipHandler.getImageData(data)
-                ?: throw IllegalStateException("Failed to load image: ${data.fileName}")
+            
+            if (imageData == null) {
+                println("ERROR: ZipImageFetcherNew - imageData is null for ${data.fileName}")
+                println("ERROR: ZIP URI: ${data.zipUri}")
+                println("ERROR: Entry name: ${data.entryName}")
+                throw IllegalStateException("Failed to load image: ${data.fileName}")
+            }
+            
+            if (imageData.isEmpty()) {
+                println("ERROR: ZipImageFetcherNew - imageData is empty for ${data.fileName}")
+                throw IllegalStateException("Image data is empty: ${data.fileName}")
+            }
             
             val bitmapDecodeStart = System.currentTimeMillis()
             
             // ByteArrayからBitmapを作成
             val bitmap = BitmapFactory.decodeByteArray(imageData, 0, imageData.size)
-                ?: throw IllegalStateException("Failed to decode image: ${data.fileName}")
+            
+            if (bitmap == null) {
+                println("ERROR: ZipImageFetcherNew - Failed to decode bitmap for ${data.fileName}")
+                println("ERROR: Image data size: ${imageData.size} bytes")
+                println("ERROR: First 10 bytes: ${imageData.take(10).joinToString { "0x%02x".format(it) }}")
+                throw IllegalStateException("Failed to decode image: ${data.fileName}")
+            }
+            
+            if (bitmap.isRecycled) {
+                println("ERROR: ZipImageFetcherNew - Bitmap is recycled for ${data.fileName}")
+                throw IllegalStateException("Bitmap is recycled: ${data.fileName}")
+            }
             
             val totalTime = System.currentTimeMillis() - startTime
             val decodeTime = System.currentTimeMillis() - bitmapDecodeStart

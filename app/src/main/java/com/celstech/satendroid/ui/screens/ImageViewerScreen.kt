@@ -78,7 +78,7 @@ fun ImageViewerScreen(
     onNavigateToPreviousFile: (() -> Unit)? = null,
     onNavigateToNextFile: (() -> Unit)? = null,
     fileNavigationInfo: FileNavigationManager.NavigationInfo? = null,
-    cacheManager: com.celstech.satendroid.cache.ImageCacheManager,
+    cacheManager: com.celstech.satendroid.utils.UnifiedReadingDataManager,
     onPageChanged: ((currentPage: Int, totalPages: Int, zipFile: File) -> Unit)? = null
 ) {
     val coroutineScope = rememberCoroutineScope()

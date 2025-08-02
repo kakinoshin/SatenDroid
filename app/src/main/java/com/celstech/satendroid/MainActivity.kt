@@ -15,7 +15,6 @@ import androidx.lifecycle.lifecycleScope
 import coil.Coil
 import coil.ImageLoader
 import com.celstech.satendroid.dropbox.DropboxAuthManager
-import com.celstech.satendroid.ui.screens.MainScreen
 import com.celstech.satendroid.ui.theme.SatenDroidTheme
 import com.celstech.satendroid.utils.DirectZipImageHandler
 import com.celstech.satendroid.utils.ZipImageFetcherNew
@@ -26,6 +25,9 @@ val LocalDropboxAuthManager = staticCompositionLocalOf<DropboxAuthManager> {
     error("No DropboxAuthManager provided")
 }
 
+/**
+ * メインアクティビティ - コンパイルエラー修正版
+ */
 class MainActivity : ComponentActivity() {
     
     private lateinit var dropboxAuthManager: DropboxAuthManager
@@ -54,7 +56,7 @@ class MainActivity : ComponentActivity() {
                         color = MaterialTheme.colorScheme.background
                     ) {
                         // 新しい直接アクセス方式を使用
-                        MainScreen()
+                        com.celstech.satendroid.ui.screens.MainScreen()
                     }
                 }
             }
@@ -102,13 +104,13 @@ class MainActivity : ComponentActivity() {
         // 未保存の位置をフラッシュしてからクリーンアップ
         lifecycleScope.launch {
             try {
-                directZipHandler.getCacheManager().flushPendingPositions()
+                directZipHandler.getUnifiedDataManager().flushPendingPositions()
             } catch (e: Exception) {
                 println("DEBUG: Failed to flush pending positions: ${e.message}")
             }
             // リソースのクリーンアップ
             directZipHandler.cleanup()
-            directZipHandler.getCacheManager().cleanup()
+            directZipHandler.getUnifiedDataManager().cleanup()
         }
     }
 }

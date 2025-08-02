@@ -3,11 +3,7 @@ package com.celstech.satendroid.utils
 import android.content.Context
 import android.net.Uri
 import android.provider.MediaStore
-import com.celstech.satendroid.cache.ImageCacheManager
 import java.io.File
-import java.io.FileOutputStream
-import java.io.IOException
-import java.util.zip.ZipInputStream
 
 /**
  * 従来のZipImageHandler - テンポラリファイル展開方式（非推奨）
@@ -19,7 +15,6 @@ import java.util.zip.ZipInputStream
     replaceWith = ReplaceWith("DirectZipImageHandler")
 )
 class ZipImageHandler(private val context: Context) {
-    private val cacheManager = ImageCacheManager(context)
     
     /**
      * ZIPファイルから画像を抽出（非推奨：テンポラリファイルに展開）
@@ -49,11 +44,6 @@ class ZipImageHandler(private val context: Context) {
         println("WARNING: clearExtractedFiles is deprecated. No temporary files are created in the new approach.")
         // 新しい方式では何もする必要がない
     }
-
-    /**
-     * キャッシュマネージャーを取得
-     */
-    fun getCacheManager(): ImageCacheManager = cacheManager
     
     /**
      * ファイル識別子を生成（エンコーディング統一）
@@ -79,27 +69,6 @@ class ZipImageHandler(private val context: Context) {
             // フォールバック：URIをそのまま文字列化
             zipUri.toString()
         }
-    }
-    
-    /**
-     * 現在の表示位置を保存
-     */
-    fun saveCurrentPosition(zipUri: Uri, imageIndex: Int, zipFile: File? = null) {
-        cacheManager.saveCurrentPosition(zipUri, imageIndex, zipFile)
-    }
-    
-    /**
-     * 保存された表示位置を取得
-     */
-    fun getSavedPosition(zipUri: Uri, zipFile: File? = null): Int? {
-        return cacheManager.getSavedPosition(zipUri, zipFile)
-    }
-    
-    /**
-     * ZIPファイル削除時の処理
-     */
-    fun onZipFileDeleted(zipUri: Uri, zipFile: File? = null) {
-        cacheManager.onFileDeleted(zipUri, zipFile)
     }
 
     // ファイルのUriを取得するヘルパー

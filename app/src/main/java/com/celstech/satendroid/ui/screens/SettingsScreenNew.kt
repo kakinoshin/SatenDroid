@@ -12,13 +12,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.celstech.satendroid.cache.ImageCacheManager
+import com.celstech.satendroid.utils.UnifiedReadingDataManager
 import com.celstech.satendroid.ui.components.InfoDialog
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreenNew(
-    cacheManager: ImageCacheManager,
+    cacheManager: UnifiedReadingDataManager,
     directZipHandler: com.celstech.satendroid.utils.DirectZipImageHandler? = null,
     onBackPressed: () -> Unit
 ) {

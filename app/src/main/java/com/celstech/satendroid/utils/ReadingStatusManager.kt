@@ -20,7 +20,6 @@ class ReadingStatusManager(context: Context) {
     companion object {
         private const val STATUS_PREFIX = "status_"
         private const val CURRENT_INDEX_PREFIX = "current_index_"
-        private const val TOTAL_COUNT_PREFIX = "total_count_"
     }
     
     /**
@@ -39,18 +38,13 @@ class ReadingStatusManager(context: Context) {
     suspend fun saveReadingStatus(
         filePath: String, 
         status: ReadingStatus,
-        currentIndex: Int = 0,
-        totalCount: Int = 0
+        currentIndex: Int = 0
     ) = withContext(Dispatchers.IO) {
         val normalizedPath = normalizeFilePath(filePath)
-        println("DEBUG: Saving reading status - Original Path: $filePath")
-        println("DEBUG: Saving reading status - Normalized Path: $normalizedPath, Status: $status, Index: $currentIndex")
         prefs.edit {
             putString(STATUS_PREFIX + normalizedPath, status.name)
             putInt(CURRENT_INDEX_PREFIX + normalizedPath, currentIndex)
-            putInt(TOTAL_COUNT_PREFIX + normalizedPath, totalCount)
         }
-        println("DEBUG: Reading status saved successfully")
     }
     
     /**
@@ -59,8 +53,6 @@ class ReadingStatusManager(context: Context) {
     suspend fun getReadingStatus(filePath: String): ReadingStatus = withContext(Dispatchers.IO) {
         val normalizedPath = normalizeFilePath(filePath)
         val statusString = prefs.getString(STATUS_PREFIX + normalizedPath, ReadingStatus.UNREAD.name)
-        println("DEBUG: Getting reading status - Original Path: $filePath")
-        println("DEBUG: Getting reading status - Normalized Path: $normalizedPath, Found: $statusString")
         try {
             ReadingStatus.valueOf(statusString ?: ReadingStatus.UNREAD.name)
         } catch (_: IllegalArgumentException) {
@@ -77,43 +69,65 @@ class ReadingStatusManager(context: Context) {
     }
     
     /**
-     * ファイルの総画像数を取得
-     */
-    suspend fun getTotalImageCount(filePath: String): Int = withContext(Dispatchers.IO) {
-        val normalizedPath = normalizeFilePath(filePath)
-        prefs.getInt(TOTAL_COUNT_PREFIX + normalizedPath, 0)
-    }
-    
-    /**
      * ファイルの読書進捗情報を一括取得
      */
     suspend fun getReadingProgress(filePath: String): ReadingProgress = withContext(Dispatchers.IO) {
         ReadingProgress(
             status = getReadingStatus(filePath),
-            currentIndex = getCurrentImageIndex(filePath),
-            totalCount = getTotalImageCount(filePath)
+            currentIndex = getCurrentImageIndex(filePath)
+        )
+    }
+    
+    /**
+     * ファイルの読書状況を同期的に取得（UI用）
+     */
+    fun getReadingStatusSync(filePath: String): ReadingStatus {
+        val normalizedPath = normalizeFilePath(filePath)
+        val statusString = prefs.getString(STATUS_PREFIX + normalizedPath, ReadingStatus.UNREAD.name)
+        return try {
+            ReadingStatus.valueOf(statusString ?: ReadingStatus.UNREAD.name)
+        } catch (_: IllegalArgumentException) {
+            ReadingStatus.UNREAD
+        }
+    }
+    
+    /**
+     * ファイルの現在の画像インデックスを同期的に取得（UI用）
+     */
+    fun getCurrentImageIndexSync(filePath: String): Int {
+        val normalizedPath = normalizeFilePath(filePath)
+        return prefs.getInt(CURRENT_INDEX_PREFIX + normalizedPath, 0)
+    }
+    
+    /**
+     * ファイルの読書進捗情報を同期的に一括取得（UI用）
+     */
+    fun getReadingProgressSync(filePath: String): ReadingProgress {
+        return ReadingProgress(
+            status = getReadingStatusSync(filePath),
+            currentIndex = getCurrentImageIndexSync(filePath)
         )
     }
     
     /**
      * ファイルを既読にマーク
      */
-    suspend fun markAsCompleted(filePath: String, totalCount: Int) {
-        saveReadingStatus(filePath, ReadingStatus.COMPLETED, totalCount - 1, totalCount)
+    suspend fun markAsCompleted(filePath: String, lastIndex: Int) {
+        saveReadingStatus(filePath, ReadingStatus.COMPLETED, lastIndex)
     }
     
     /**
      * ファイルを読書中にマーク
      */
-    suspend fun markAsReading(filePath: String, currentIndex: Int, totalCount: Int) {
-        saveReadingStatus(filePath, ReadingStatus.READING, currentIndex, totalCount)
+    suspend fun markAsReading(filePath: String, currentIndex: Int) {
+        saveReadingStatus(filePath, ReadingStatus.READING, currentIndex)
     }
     
     /**
      * ファイルを未読にリセット
      */
     suspend fun markAsUnread(filePath: String) {
-        saveReadingStatus(filePath, ReadingStatus.UNREAD, 0, 0)
+        saveReadingStatus(filePath, ReadingStatus.UNREAD, 0)
     }
     
     /**
@@ -121,12 +135,9 @@ class ReadingStatusManager(context: Context) {
      */
     suspend fun clearReadingStatus(filePath: String) = withContext(Dispatchers.IO) {
         val normalizedPath = normalizeFilePath(filePath)
-        println("DEBUG: Clearing reading status - Original Path: $filePath")
-        println("DEBUG: Clearing reading status - Normalized Path: $normalizedPath")
         prefs.edit {
             remove(STATUS_PREFIX + normalizedPath)
             remove(CURRENT_INDEX_PREFIX + normalizedPath)
-            remove(TOTAL_COUNT_PREFIX + normalizedPath)
         }
     }
     
@@ -143,19 +154,8 @@ class ReadingStatusManager(context: Context) {
  */
 data class ReadingProgress(
     val status: ReadingStatus,
-    val currentIndex: Int,
-    val totalCount: Int
+    val currentIndex: Int
 ) {
-    /**
-     * 進捗率を取得（0.0 - 1.0）
-     */
-    val progress: Float
-        get() = if (totalCount > 0) {
-            currentIndex.toFloat() / totalCount.toFloat()
-        } else {
-            0f
-        }
-    
     /**
      * 読了済みかどうか
      */

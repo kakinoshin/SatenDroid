@@ -46,9 +46,7 @@ sealed class LocalItem {
         override val lastModified: Long,
         val size: Long,
         val file: File,
-        val readingStatus: ReadingStatus = ReadingStatus.UNREAD,
         val thumbnail: Bitmap? = null,
-        val currentImageIndex: Int = 0,
         val totalImageCount: Int = 0
     ) : LocalItem()
 }

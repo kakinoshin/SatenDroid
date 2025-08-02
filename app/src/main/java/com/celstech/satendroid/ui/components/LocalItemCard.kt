@@ -42,12 +42,20 @@ import com.celstech.satendroid.utils.FormatUtils
 @Composable
 fun LocalItemCard(
     item: LocalItem,
+    viewModel: com.celstech.satendroid.viewmodel.LocalFileViewModel,
     isSelected: Boolean = false,
     isSelectionMode: Boolean = false,
     onClick: () -> Unit,
     onLongClick: () -> Unit = {},
     onDeleteClick: () -> Unit = {}
 ) {
+    // 統一データ管理システムによる読書状態取得
+    val readingProgress = if (item is LocalItem.ZipFile) {
+        viewModel.getReadingProgress(item.file.absolutePath)
+    } else {
+        null
+    }
+    
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -113,24 +121,26 @@ fun LocalItemCard(
                             )
                         }
                         
-                        // Reading status indicator
-                        val statusIndicator = when (item.readingStatus) {
-                            ReadingStatus.UNREAD -> "⚪" // 未読マーク
-                            ReadingStatus.READING -> "🔵" // 読書中マーク
-                            ReadingStatus.COMPLETED -> "✅" // 既読マーク
+                        // Reading status indicator（読書状態のみSharedPreferencesから取得）
+                        readingProgress?.let { progress ->
+                            val statusIndicator = when (progress.status) {
+                                ReadingStatus.UNREAD -> "⚪" // 未読マーク
+                                ReadingStatus.READING -> "🔵" // 読書中マーク
+                                ReadingStatus.COMPLETED -> "✅" // 既読マーク
+                            }
+                            
+                            Text(
+                                text = statusIndicator,
+                                fontSize = 16.sp,
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .background(
+                                        MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                                        RoundedCornerShape(8.dp)
+                                    )
+                                    .padding(2.dp)
+                            )
                         }
-                        
-                        Text(
-                            text = statusIndicator,
-                            fontSize = 16.sp,
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .background(
-                                    MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
-                                    RoundedCornerShape(8.dp)
-                                )
-                                .padding(2.dp)
-                        )
                     }
                 }
             }
@@ -175,29 +185,33 @@ fun LocalItemCard(
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                         )
 
-                        // Reading progress information
-                        val progressText = when (item.readingStatus) {
-                            ReadingStatus.UNREAD -> "未読"
-                            ReadingStatus.READING -> {
-                                if (item.totalImageCount > 0) {
-                                    "読書中 ${item.currentImageIndex + 1}/${item.totalImageCount}"
-                                } else {
-                                    "読書中"
+                        // Reading progress information（統一データ管理システム）
+                        readingProgress?.let { progress ->
+                            println("DEBUG: Display progress for ${item.name} - Status: ${progress.status}, CurrentIndex: ${progress.currentIndex}, TotalCount: ${item.totalImageCount} (UnifiedData)")
+                            
+                            val progressText = when (progress.status) {
+                                ReadingStatus.UNREAD -> "未読"
+                                ReadingStatus.READING -> {
+                                    if (item.totalImageCount > 0) {
+                                        "読書中 ${progress.currentIndex + 1}/${item.totalImageCount}"
+                                    } else {
+                                        "読書中 (画像数: ${item.totalImageCount})"
+                                    }
                                 }
+                                ReadingStatus.COMPLETED -> "読了"
                             }
-                            ReadingStatus.COMPLETED -> "読了"
+                            
+                            Text(
+                                text = progressText,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = when (progress.status) {
+                                    ReadingStatus.UNREAD -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                    ReadingStatus.READING -> MaterialTheme.colorScheme.primary
+                                    ReadingStatus.COMPLETED -> MaterialTheme.colorScheme.tertiary
+                                },
+                                fontWeight = FontWeight.Medium
+                            )
                         }
-                        
-                        Text(
-                            text = progressText,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = when (item.readingStatus) {
-                                ReadingStatus.UNREAD -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                                ReadingStatus.READING -> MaterialTheme.colorScheme.primary
-                                ReadingStatus.COMPLETED -> MaterialTheme.colorScheme.tertiary
-                            },
-                            fontWeight = FontWeight.Medium
-                        )
                     }
                 }
             }

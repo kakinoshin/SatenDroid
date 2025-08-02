@@ -12,18 +12,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.celstech.satendroid.cache.ImageCacheManager
+import com.celstech.satendroid.utils.UnifiedReadingDataManager
 import com.celstech.satendroid.ui.components.InfoDialog
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
-    cacheManager: ImageCacheManager,
+    unifiedDataManager: UnifiedReadingDataManager,
     directZipHandler: com.celstech.satendroid.utils.DirectZipImageHandler? = null,
     onBackPressed: () -> Unit
 ) {
-    val cacheEnabled by cacheManager.cacheEnabled.collectAsState()
-    val reverseSwipeDirection by cacheManager.reverseSwipeDirection.collectAsState()
+    val cacheEnabled by unifiedDataManager.cacheEnabled.collectAsState()
+    val reverseSwipeDirection by unifiedDataManager.reverseSwipeDirection.collectAsState()
     
     var showConfirmClearDialog by remember { mutableStateOf(false) }
     
@@ -69,7 +69,7 @@ fun SettingsScreen(
                         Text("キャッシュ機能")
                         Switch(
                             checked = cacheEnabled,
-                            onCheckedChange = { cacheManager.setCacheEnabled(it) }
+                            onCheckedChange = { unifiedDataManager.setCacheEnabled(it) }
                         )
                     }
                     
@@ -112,7 +112,7 @@ fun SettingsScreen(
                         Text("スワイプ方向を逆転")
                         Switch(
                             checked = reverseSwipeDirection,
-                            onCheckedChange = { cacheManager.setReverseSwipeDirection(it) }
+                            onCheckedChange = { unifiedDataManager.setReverseSwipeDirection(it) }
                         )
                     }
                 }
@@ -184,7 +184,7 @@ fun SettingsScreen(
             confirmText = "削除",
             dismissText = "キャンセル",
             onConfirm = {
-                cacheManager.clearCache()
+                unifiedDataManager.clearCache()
                 showConfirmClearDialog = false
             },
             onDismiss = { showConfirmClearDialog = false }

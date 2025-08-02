@@ -2,7 +2,7 @@ package com.celstech.satendroid.utils
 
 import android.content.Context
 import android.net.Uri
-import com.celstech.satendroid.cache.ImageCacheManager
+
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,7 +21,7 @@ import kotlin.math.min
  * パフォーマンス最適化版 - 完全同期化対応
  */
 class DirectZipImageHandler(private val context: Context) {
-    private val cacheManager = ImageCacheManager(context)
+    private val unifiedDataManager = UnifiedReadingDataManager(context)
     
     // サポートされる画像拡張子
     private val supportedExtensions = setOf("jpg", "jpeg", "png", "gif", "bmp", "webp")
@@ -135,7 +135,7 @@ class DirectZipImageHandler(private val context: Context) {
                 // 最新の位置を保存
                 if (latestRequest != null) {
                     try {
-                        cacheManager.saveCurrentPosition(
+                        unifiedDataManager.saveCurrentPosition(
                             latestRequest.zipUri, 
                             latestRequest.imageIndex, 
                             latestRequest.zipFile
@@ -318,7 +318,10 @@ class DirectZipImageHandler(private val context: Context) {
                 }
                 
                 // ZipFileの状態を再確認（クローズされていないか）
-                if (zipFile.name == null) {
+                try {
+                    // ZipFileが有効かチェック（例外で判定）
+                    zipFile.entries().hasMoreElements()
+                } catch (e: IllegalStateException) {
                     println("DEBUG: ZipFile appears to be closed")
                     currentOpenZipFile = null
                     currentOpenZipUri = null
@@ -574,7 +577,7 @@ class DirectZipImageHandler(private val context: Context) {
     }
     
     // 既存メソッドのデリゲート
-    fun getCacheManager(): ImageCacheManager = cacheManager
+    fun getUnifiedDataManager(): UnifiedReadingDataManager = unifiedDataManager
     
     fun generateFileIdentifier(zipUri: Uri, zipFile: File? = null): String {
         return try {
@@ -592,11 +595,11 @@ class DirectZipImageHandler(private val context: Context) {
     }
     
     fun getSavedPosition(zipUri: Uri, zipFile: File? = null): Int? {
-        return cacheManager.getSavedPosition(zipUri, zipFile)
+        return unifiedDataManager.getSavedPosition(zipUri, zipFile)
     }
     
     fun onZipFileDeleted(zipUri: Uri, zipFile: File? = null) {
-        cacheManager.onFileDeleted(zipUri, zipFile)
+        unifiedDataManager.onFileDeleted(zipUri, zipFile)
         val fileId = generateFileIdentifier(zipUri, zipFile)
         imageDataCache.keys.removeAll { it.startsWith(fileId) }
         zipEntryCache.remove(fileId)

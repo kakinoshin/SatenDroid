@@ -16,6 +16,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.snapshots.SnapshotStateMap
+import com.celstech.satendroid.utils.ReadingProgress
 import java.io.File
 
 /**
@@ -35,6 +38,41 @@ class LocalFileViewModel(
     private val _uiState = MutableStateFlow(LocalFileUiState())
     val uiState: StateFlow<LocalFileUiState> = _uiState.asStateFlow()
 
+    // Reading states for all files (State management for performance)
+    private val _readingStates = mutableStateMapOf<String, ReadingProgress>()
+    val readingStates: SnapshotStateMap<String, ReadingProgress> = _readingStates
+
+    /**
+     * Load reading states for all ZIP files into memory state
+     */
+    private fun loadReadingStatesForFiles(items: List<LocalItem>) {
+        viewModelScope.launch {
+            items.filterIsInstance<LocalItem.ZipFile>().forEach { zipFile ->
+                try {
+                    val progress = repository.getReadingProgressSync(zipFile.file.absolutePath)
+                    _readingStates[zipFile.file.absolutePath] = progress
+                    println("DEBUG: ViewModel loaded reading state - File: ${zipFile.name}, Status: ${progress.status}, Position: ${progress.currentIndex}")
+                } catch (e: Exception) {
+                    // Initialize with default state if reading fails
+                    _readingStates[zipFile.file.absolutePath] = ReadingProgress(
+                        status = com.celstech.satendroid.ui.models.ReadingStatus.UNREAD,
+                        currentIndex = 0
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Get reading progress for a file (high-performance memory access)
+     */
+    fun getReadingProgress(filePath: String): ReadingProgress {
+        return _readingStates[filePath] ?: ReadingProgress(
+            status = com.celstech.satendroid.ui.models.ReadingStatus.UNREAD,
+            currentIndex = 0
+        )
+    }
+
     // Navigation
     fun navigateToFolder(folderPath: String) {
         val currentState = _uiState.value
@@ -43,7 +81,7 @@ class LocalFileViewModel(
             currentState.pathHistory,
             folderPath
         )
-        
+
         _uiState.value = currentState.copy(
             pathHistory = navigationResult.newHistory,
             currentPath = navigationResult.newPath,
@@ -56,7 +94,7 @@ class LocalFileViewModel(
     fun navigateBack() {
         val currentState = _uiState.value
         val navigationResult = navigationManager.navigateBack(currentState.pathHistory)
-        
+
         if (navigationResult != null) {
             _uiState.value = currentState.copy(
                 pathHistory = navigationResult.newHistory,
@@ -120,17 +158,20 @@ class LocalFileViewModel(
     fun scanDirectory(path: String = "") {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isRefreshing = true)
-            
+
             try {
                 val items = repository.scanDirectory(path)
-                
+
                 _uiState.value = _uiState.value.copy(
                     localItems = items,
                     isRefreshing = false
                 )
-                
+
+                // Load reading states for all ZIP files (high-performance State management)
+                loadReadingStatesForFiles(items)
+
                 println("DEBUG: Found ${items.size} items in path '$path'")
-                
+
             } catch (e: Exception) {
                 println("DEBUG: Error scanning directory '$path': ${e.message}")
                 e.printStackTrace()
@@ -169,7 +210,7 @@ class LocalFileViewModel(
     fun deleteSelectedItems() {
         viewModelScope.launch {
             val (successCount, failCount) = repository.deleteItems(_uiState.value.selectedItems)
-            
+
             // 成功した削除項目のキャッシュをクリア
             _uiState.value.selectedItems.forEach { item ->
                 when (item) {
@@ -177,12 +218,13 @@ class LocalFileViewModel(
                         val zipUri = item.file.toUri()
                         directZipHandler.onZipFileDeleted(zipUri, item.file)
                     }
+
                     is LocalItem.Folder -> {
                         clearCacheForFolder(item.path)
                     }
                 }
             }
-            
+
             // Clear selection and refresh
             _uiState.value = _uiState.value.copy(
                 selectedItems = emptySet(),
@@ -191,13 +233,13 @@ class LocalFileViewModel(
             scanDirectory(_uiState.value.currentPath)
         }
     }
-    
+
     private fun clearCacheForFolder(folderPath: String) {
         // フォルダ内のZIPファイルのキャッシュをクリアする処理
         // 実際の実装では、フォルダ内のZIPファイルを再帰的に検索して
         // 各ファイルのキャッシュをクリアする必要があります
         // ここでは簡略化して、すべてのキャッシュをクリア
-        directZipHandler.getCacheManager().clearCache()
+        directZipHandler.getUnifiedDataManager().clearCache()
     }
 
     // Dialog state management
@@ -214,80 +256,82 @@ class LocalFileViewModel(
     }
 
     // Reading status management
-    fun updateReadingStatus(zipFile: LocalItem.ZipFile, currentIndex: Int, totalCount: Int? = null) {
+    fun updateReadingStatus(zipFile: LocalItem.ZipFile, currentIndex: Int) {
         viewModelScope.launch {
             try {
-                val updatedZipFile = repository.updateReadingStatus(zipFile, currentIndex, totalCount)
+                println("=== ViewModel.updateReadingStatus START ===")
+                println("DEBUG: ViewModel - Input parameters:")
+                println("DEBUG:   File: ${zipFile.name}")
+                println("DEBUG:   File Path: ${zipFile.file.absolutePath}")
+                println("DEBUG:   Current Index: $currentIndex")
+                println("DEBUG:   ZipFile.totalImageCount: ${zipFile.totalImageCount}")
                 
-                // UIStateのlocalItemsを更新
-                val currentItems = _uiState.value.localItems
-                val updatedItems = currentItems.map { item ->
-                    if (item is LocalItem.ZipFile && item.file.absolutePath == zipFile.file.absolutePath) {
-                        updatedZipFile
-                    } else {
-                        item
-                    }
-                }
-                
-                _uiState.value = _uiState.value.copy(localItems = updatedItems)
-                
-                println("DEBUG: Reading status update completed - Status: ${updatedZipFile.readingStatus}, Index: ${updatedZipFile.currentImageIndex}/${updatedZipFile.totalImageCount}")
-                
+                // 現在の読書状態を確認（更新前）
+                val beforeStatus = repository.getReadingStatusSync(zipFile.file.absolutePath)
+                val beforePosition = repository.getReadingPositionSync(zipFile.file.absolutePath)
+                println("DEBUG: ViewModel - Before update:")
+                println("DEBUG:   Before Status: $beforeStatus")
+                println("DEBUG:   Before Position: $beforePosition")
+
+                // Repository経由で統一データ管理システムに更新
+                repository.updateReadingStatus(zipFile, currentIndex)
+
+                // State immediately update (high-performance UI updates)
+                val newProgress = repository.getReadingProgressSync(zipFile.file.absolutePath)
+                _readingStates[zipFile.file.absolutePath] = newProgress
+
+                println("DEBUG: ViewModel - After update:")
+                println("DEBUG:   New Status: ${newProgress.status}")
+                println("DEBUG:   New Position: ${newProgress.currentIndex}")
+                println("DEBUG:   State Cache Updated: ${_readingStates.containsKey(zipFile.file.absolutePath)}")
+                println("=== ViewModel.updateReadingStatus END ===")
+
             } catch (e: Exception) {
-                println("DEBUG: Failed to update reading status: ${e.message}")
+                println("ERROR: ViewModel.updateReadingStatus failed: ${e.message}")
                 e.printStackTrace()
             }
         }
     }
 
     fun markAsCompleted(zipFile: LocalItem.ZipFile) {
-        updateReadingStatus(zipFile, zipFile.totalImageCount - 1, zipFile.totalImageCount)
+        updateReadingStatus(zipFile, zipFile.totalImageCount - 1)
     }
 
     fun markAsReading(zipFile: LocalItem.ZipFile, currentIndex: Int) {
-        updateReadingStatus(zipFile, currentIndex, zipFile.totalImageCount)
+        updateReadingStatus(zipFile, currentIndex)
     }
 
     fun markAsUnread(zipFile: LocalItem.ZipFile) {
-        updateReadingStatus(zipFile, 0, zipFile.totalImageCount)
+        updateReadingStatus(zipFile, 0)
     }
 
     // テスト用: 読書状態を強制的に更新
-    fun testUpdateReadingStatus(zipFile: LocalItem.ZipFile, status: com.celstech.satendroid.ui.models.ReadingStatus) {
+    fun testUpdateReadingStatus(
+        zipFile: LocalItem.ZipFile,
+        status: com.celstech.satendroid.ui.models.ReadingStatus
+    ) {
         viewModelScope.launch {
             try {
-                println("DEBUG: Test updating reading status - File: ${zipFile.name}, Status: $status")
-                
-                val updatedZipFile = when (status) {
-                    com.celstech.satendroid.ui.models.ReadingStatus.UNREAD -> {
-                        repository.updateReadingStatus(zipFile, 0, zipFile.totalImageCount)
-                    }
+                val position = when (status) {
+                    com.celstech.satendroid.ui.models.ReadingStatus.UNREAD -> 0
                     com.celstech.satendroid.ui.models.ReadingStatus.READING -> {
-                        val middleIndex = if (zipFile.totalImageCount > 0) zipFile.totalImageCount / 2 else 0
-                        repository.updateReadingStatus(zipFile, middleIndex, zipFile.totalImageCount)
+                        if (zipFile.totalImageCount > 0) zipFile.totalImageCount / 2 else 0
                     }
+
                     com.celstech.satendroid.ui.models.ReadingStatus.COMPLETED -> {
-                        val lastIndex = if (zipFile.totalImageCount > 0) zipFile.totalImageCount - 1 else 0
-                        repository.updateReadingStatus(zipFile, lastIndex, zipFile.totalImageCount)
+                        if (zipFile.totalImageCount > 0) zipFile.totalImageCount - 1 else 0
                     }
                 }
-                
-                // UIStateのlocalItemsを更新
-                val currentItems = _uiState.value.localItems
-                val updatedItems = currentItems.map { item ->
-                    if (item is LocalItem.ZipFile && item.file.absolutePath == zipFile.file.absolutePath) {
-                        updatedZipFile
-                    } else {
-                        item
-                    }
-                }
-                
-                _uiState.value = _uiState.value.copy(localItems = updatedItems)
-                
-                println("DEBUG: Reading status update completed - Status: ${updatedZipFile.readingStatus}, Index: ${updatedZipFile.currentImageIndex}/${updatedZipFile.totalImageCount}")
-                
-                println("DEBUG: Test reading status update completed successfully")
-                
+
+                // Repository経由で統一データ管理システムに更新
+                repository.updateReadingStatus(zipFile, position)
+
+                // Update State immediately (high-performance UI updates)
+                val newProgress = repository.getReadingProgressSync(zipFile.file.absolutePath)
+                _readingStates[zipFile.file.absolutePath] = newProgress
+
+                println("DEBUG: ViewModel test updated reading status - File: ${zipFile.name}, Position: $position, Status: ${newProgress.status}")
+
             } catch (e: Exception) {
                 println("DEBUG: Failed to test update reading status: ${e.message}")
                 e.printStackTrace()
@@ -304,25 +348,16 @@ class LocalFileViewModel(
     fun onZipFileOpened(zipFile: LocalItem.ZipFile) {
         viewModelScope.launch {
             try {
-                println("DEBUG: onZipFileOpened called for ${zipFile.name}")
                 // ファイルを開いた時点で「読書中」に設定（まだ何も見ていなくても）
                 // 少なくとも1ページ目を見たとして扱う
-                val updatedZipFile = repository.updateReadingStatus(zipFile, 0, zipFile.totalImageCount)
-                
-                // UIStateを更新
-                val currentItems = _uiState.value.localItems
-                val updatedItems = currentItems.map { item ->
-                    if (item is LocalItem.ZipFile && item.file.absolutePath == zipFile.file.absolutePath) {
-                        updatedZipFile
-                    } else {
-                        item
-                    }
-                }
-                
-                _uiState.value = _uiState.value.copy(localItems = updatedItems)
-                
-                println("DEBUG: ZipFile opened - reading status updated to ${updatedZipFile.readingStatus}")
-                
+                repository.updateReadingStatus(zipFile, 0)
+
+                // Update State immediately (high-performance UI updates)
+                val newProgress = repository.getReadingProgressSync(zipFile.file.absolutePath)
+                _readingStates[zipFile.file.absolutePath] = newProgress
+
+                println("DEBUG: ViewModel marked file as opened - File: ${zipFile.name}, Status: ${newProgress.status}")
+
             } catch (e: Exception) {
                 println("DEBUG: Failed to update reading status on file open: ${e.message}")
                 e.printStackTrace()
@@ -333,7 +368,6 @@ class LocalFileViewModel(
     // 画像ビューアーから戻ってきたときに呼び出す（読書状態を再取得）
     fun onReturnFromImageViewer() {
         refreshCurrentDirectory()
-        println("DEBUG: Returned from image viewer - refreshing directory to get latest reading status")
     }
 
     override fun onCleared() {
@@ -343,22 +377,23 @@ class LocalFileViewModel(
     }
 
     companion object {
-        fun provideFactory(context: Context): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
-            @Suppress("UNCHECKED_CAST")
-            override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                val repository = LocalFileRepository(context)
-                val navigationManager = LocalFileNavigationManager()
-                val selectionManager = SelectionManager()
-                val directZipHandler = DirectZipImageHandler(context)
-                val fileNavigationManager = FileNavigationManager(context)
-                return LocalFileViewModel(
-                    repository, 
-                    navigationManager, 
-                    selectionManager, 
-                    directZipHandler, 
-                    fileNavigationManager
-                ) as T
+        fun provideFactory(context: Context): ViewModelProvider.Factory =
+            object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                    val repository = LocalFileRepository(context)
+                    val navigationManager = LocalFileNavigationManager()
+                    val selectionManager = SelectionManager()
+                    val directZipHandler = DirectZipImageHandler(context)
+                    val fileNavigationManager = FileNavigationManager(context)
+                    return LocalFileViewModel(
+                        repository,
+                        navigationManager,
+                        selectionManager,
+                        directZipHandler,
+                        fileNavigationManager
+                    ) as T
+                }
             }
-        }
     }
 }

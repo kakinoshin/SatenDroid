@@ -59,6 +59,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import coil.compose.AsyncImagePainter
 import coil.compose.rememberAsyncImagePainter
 import com.celstech.satendroid.navigation.FileNavigationManager
+import com.celstech.satendroid.utils.UnifiedReadingDataManager
 import com.celstech.satendroid.ui.components.PerformanceAlert
 import com.celstech.satendroid.ui.components.PerformanceMonitor
 import com.celstech.satendroid.ui.components.PerformanceToggleButton
@@ -84,7 +85,7 @@ fun DirectZipImageViewerScreen(
     onNavigateToPreviousFile: (() -> Unit)? = null,
     onNavigateToNextFile: (() -> Unit)? = null,
     fileNavigationInfo: FileNavigationManager.NavigationInfo? = null,
-    cacheManager: com.celstech.satendroid.cache.ImageCacheManager,
+    cacheManager: UnifiedReadingDataManager,
     directZipHandler: DirectZipImageHandler? = null,
     onPageChanged: ((currentPage: Int, totalPages: Int, zipFile: File) -> Unit)? = null
 ) {
@@ -95,7 +96,7 @@ fun DirectZipImageViewerScreen(
     // State for page jump slider
     var showPageSlider by remember { mutableStateOf(false) }
     var sliderValue by remember { mutableStateOf(0f) }
-    
+
     // パフォーマンス監視UI用の状態
     var showPerformanceMonitor by remember { mutableStateOf(false) }
 
@@ -225,21 +226,21 @@ fun DirectZipImageViewerScreen(
         ) { index ->
             Box(modifier = Modifier.fillMaxSize()) {
                 var isLoading by remember { mutableStateOf(true) }
-                
+
                 val painter = rememberAsyncImagePainter(
                     model = imageEntries[index],
                     onState = { state ->
                         isLoading = state is AsyncImagePainter.State.Loading
                     }
                 )
-                
+
                 Image(
                     painter = painter,
                     contentDescription = "Image ${index + 1}",
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Fit
                 )
-                
+
                 // ローディングインジケーター
                 if (isLoading) {
                     Box(
@@ -435,7 +436,8 @@ fun DirectZipImageViewerScreen(
                 Column {
                     // Thumbnail and file info section
                     if (imageEntries.isNotEmpty()) {
-                        val targetIndex = sliderValue.roundToInt().coerceIn(0, imageEntries.size - 1)
+                        val targetIndex =
+                            sliderValue.roundToInt().coerceIn(0, imageEntries.size - 1)
                         val targetEntry = imageEntries[targetIndex]
 
                         Row(
@@ -450,21 +452,21 @@ fun DirectZipImageViewerScreen(
                                     .clip(RoundedCornerShape(8.dp))
                             ) {
                                 var thumbnailLoading by remember { mutableStateOf(true) }
-                                
+
                                 val thumbnailPainter = rememberAsyncImagePainter(
                                     model = targetEntry,
                                     onState = { state ->
                                         thumbnailLoading = state is AsyncImagePainter.State.Loading
                                     }
                                 )
-                                
+
                                 Image(
                                     painter = thumbnailPainter,
                                     contentDescription = "Thumbnail",
                                     modifier = Modifier.fillMaxSize(),
                                     contentScale = ContentScale.Crop
                                 )
-                                
+
                                 if (thumbnailLoading) {
                                     Box(
                                         modifier = Modifier
@@ -531,7 +533,7 @@ fun DirectZipImageViewerScreen(
                 }
             }
         }
-        
+
         // パフォーマンス監視UI
         if (directZipHandler != null) {
             // パフォーマンス監視パネル
@@ -540,7 +542,7 @@ fun DirectZipImageViewerScreen(
                 isVisible = showPerformanceMonitor,
                 modifier = Modifier.align(Alignment.TopStart)
             )
-            
+
             // パフォーマンス警告
             PerformanceAlert(
                 zipHandler = directZipHandler,
@@ -548,7 +550,7 @@ fun DirectZipImageViewerScreen(
                     .align(Alignment.TopCenter)
                     .padding(top = if (showPerformanceMonitor) 200.dp else 0.dp)
             )
-            
+
             // パフォーマンス監視トグルボタン（開発者用）
             if (!showPageSlider && !showTopBar) {
                 PerformanceToggleButton(
