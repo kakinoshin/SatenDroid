@@ -373,7 +373,7 @@ class LocalFileViewModel(
     override fun onCleared() {
         super.onCleared()
         // ViewModelが破棄される際にメモリキャッシュをクリア
-        directZipHandler.clearMemoryCache()
+        directZipHandler.clearMemoryCacheAsync()
     }
 
     companion object {

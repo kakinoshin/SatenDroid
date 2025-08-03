@@ -21,8 +21,17 @@ class ZipImageFetcherNew(
     override suspend fun fetch(): FetchResult {
         val startTime = System.currentTimeMillis()
         println("DEBUG: ZipImageFetcherNew.fetch() called for ${data.fileName}")
+        println("DEBUG: ZIP URI: ${data.zipUri}")
+        println("DEBUG: Entry name: ${data.entryName}")
         
         try {
+            // ZIP ファイルの存在確認
+            if (data.zipFile != null) {
+                println("DEBUG: ZIP file path: ${data.zipFile.absolutePath}")
+                println("DEBUG: ZIP file exists: ${data.zipFile.exists()}")
+                println("DEBUG: ZIP file size: ${data.zipFile.length()} bytes")
+            }
+            
             // 高速化されたDirectZipImageHandlerを使用
             val imageData = zipHandler.getImageData(data)
             
@@ -30,12 +39,21 @@ class ZipImageFetcherNew(
                 println("ERROR: ZipImageFetcherNew - imageData is null for ${data.fileName}")
                 println("ERROR: ZIP URI: ${data.zipUri}")
                 println("ERROR: Entry name: ${data.entryName}")
+                println("ERROR: ZIP file: ${data.zipFile?.absolutePath}")
                 throw IllegalStateException("Failed to load image: ${data.fileName}")
             }
             
             if (imageData.isEmpty()) {
                 println("ERROR: ZipImageFetcherNew - imageData is empty for ${data.fileName}")
                 throw IllegalStateException("Image data is empty: ${data.fileName}")
+            }
+            
+            println("DEBUG: Successfully loaded image data: ${imageData.size} bytes for ${data.fileName}")
+            
+            // ファイルヘッダーを確認
+            if (imageData.size >= 10) {
+                val header = imageData.take(10).joinToString(" ") { "0x%02x".format(it) }
+                println("DEBUG: Image header: $header")
             }
             
             val bitmapDecodeStart = System.currentTimeMillis()
@@ -46,7 +64,19 @@ class ZipImageFetcherNew(
             if (bitmap == null) {
                 println("ERROR: ZipImageFetcherNew - Failed to decode bitmap for ${data.fileName}")
                 println("ERROR: Image data size: ${imageData.size} bytes")
-                println("ERROR: First 10 bytes: ${imageData.take(10).joinToString { "0x%02x".format(it) }}")
+                if (imageData.size >= 10) {
+                    println("ERROR: First 10 bytes: ${imageData.take(10).joinToString { "0x%02x".format(it) }}")
+                }
+                
+                // ファイル形式の推定
+                val format = when {
+                    imageData.size >= 2 && imageData[0] == 0xFF.toByte() && imageData[1] == 0xD8.toByte() -> "JPEG"
+                    imageData.size >= 8 && imageData[1] == 'P'.code.toByte() && imageData[2] == 'N'.code.toByte() && imageData[3] == 'G'.code.toByte() -> "PNG"
+                    imageData.size >= 6 && imageData[0] == 'G'.code.toByte() && imageData[1] == 'I'.code.toByte() && imageData[2] == 'F'.code.toByte() -> "GIF"
+                    else -> "Unknown"
+                }
+                println("ERROR: Detected format: $format")
+                
                 throw IllegalStateException("Failed to decode image: ${data.fileName}")
             }
             
@@ -59,6 +89,7 @@ class ZipImageFetcherNew(
             val decodeTime = System.currentTimeMillis() - bitmapDecodeStart
             
             println("DEBUG: ZipImageFetcherNew completed ${data.fileName} in ${totalTime}ms (decode: ${decodeTime}ms)")
+            println("DEBUG: Bitmap: ${bitmap.width}x${bitmap.height}, config: ${bitmap.config}")
             
             // BitmapをDrawableに変換してCoilに返す
             return DrawableResult(
@@ -68,7 +99,10 @@ class ZipImageFetcherNew(
             )
         } catch (e: Exception) {
             val totalTime = System.currentTimeMillis() - startTime
-            println("DEBUG: ZipImageFetcherNew failed for ${data.fileName} after ${totalTime}ms: ${e.message}")
+            println("ERROR: ZipImageFetcherNew failed for ${data.fileName} after ${totalTime}ms")
+            println("ERROR: Exception type: ${e::class.java.simpleName}")
+            println("ERROR: Exception message: ${e.message}")
+            e.printStackTrace()
             throw e
         }
     }

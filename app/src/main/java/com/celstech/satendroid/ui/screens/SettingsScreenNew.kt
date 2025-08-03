@@ -137,7 +137,7 @@ fun SettingsScreenNew(
                         Spacer(modifier = Modifier.height(16.dp))
                         
                         OutlinedButton(
-                            onClick = { directZipHandler.clearMemoryCache() },
+                            onClick = { directZipHandler.clearMemoryCacheAsync() },
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text("メモリキャッシュをクリア")

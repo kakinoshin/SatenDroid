@@ -9,130 +9,160 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.celstech.satendroid.LocalDropboxAuthManager
 import com.celstech.satendroid.navigation.FileNavigationManager
-import com.celstech.satendroid.ui.models.FileLoadingStateMachine
 import com.celstech.satendroid.ui.models.ImageViewerState
 import com.celstech.satendroid.ui.models.ViewState
 import com.celstech.satendroid.utils.DirectZipImageHandler
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * メイン画面 - State Machine対応版
- * delayによるタイミング調整を排除し、適切な状態遷移で制御
+ * メイン画面 - シンプルで確実に動作する版
+ * 複雑な State Machine を削除し、基本機能の確実な動作を優先
  */
 @OptIn(ExperimentalFoundationApi::class, ExperimentalPermissionsApi::class)
 @Composable
 fun MainScreen() {
     val context = LocalContext.current
 
-    // SupervisorJobを使用したStructured Concurrency
-    val supervisorJob = remember { SupervisorJob() }
-    val mainScope = remember(supervisorJob) {
-        CoroutineScope(Dispatchers.Main + supervisorJob)
-    }
+    // シンプルなスコープ
+    val coroutineScope = rememberCoroutineScope()
 
-    // Main state for the current view
+    // シンプルな状態管理
     var currentView by remember { mutableStateOf<ViewState>(ViewState.LocalFileList) }
+    var isLoading by remember { mutableStateOf(false) }
+    var loadingMessage by remember { mutableStateOf("") }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    // State Machine for file loading
-    val stateMachine = remember { FileLoadingStateMachine() }
-    val loadingState by stateMachine.currentState.collectAsState()
-    val pendingRequest by stateMachine.pendingRequest.collectAsState()
+    // 画像ビューア用の状態
+    var currentImageViewerState by remember { mutableStateOf<ImageViewerState?>(null) }
 
     // 読書状態更新のための状態
     var lastReadingProgress by remember { mutableStateOf<Pair<File, Int>?>(null) }
     var fileCompletionUpdate by remember { mutableStateOf<File?>(null) }
     var showTopBar by remember { mutableStateOf(false) }
-
-    // State for directory navigation
     var savedDirectoryPath by remember { mutableStateOf("") }
 
     // 直接ZIP画像ハンドラー
-    val directZipHandler = remember { DirectZipImageHandler(context) }
+    val directZipHandler = remember {
+        DirectZipImageHandler(context).also {
+            println("DEBUG: DirectZipImageHandler created")
+        }
+    }
 
     // File navigation manager
     val fileNavigationManager = remember { FileNavigationManager(context) }
 
-    // 現在の画像ビューア状態
-    val currentImageViewerState = remember(loadingState) {
-        when (val state = loadingState) {
-            is FileLoadingStateMachine.LoadingState.Ready -> state.state
-            else -> null
-        }
-    }
-
-    // Pager state - ファイル変更時に適切なページに移動
+    // Pager state
     val pagerState = rememberPagerState {
         currentImageViewerState?.imageEntries?.size ?: 0
     }
 
-    // 現在のファイル識別子
-    val currentFileId = remember(currentImageViewerState) {
-        currentImageViewerState?.fileId
-    }
-    val isImageViewerReady = remember(currentImageViewerState, stateMachine.isLoading()) {
-        currentImageViewerState != null &&
-                currentImageViewerState.imageEntries.isNotEmpty() &&
-                !stateMachine.isLoading()
-    }
+    // Permission state for external storage
+    val storagePermissionState = rememberPermissionState(
+        android.Manifest.permission.READ_EXTERNAL_STORAGE
+    )
 
-    // ページ保存用の状態
-    var lastSavedPage by remember { mutableStateOf(-1) }
-    var lastSavedFileId by remember { mutableStateOf<String?>(null) }
+    // シンプルなファイル読み込み関数
+    fun startSimpleFileLoading(uri: Uri, file: File? = null) {
+        coroutineScope.launch {
+            try {
+                isLoading = true
+                loadingMessage = "ファイルを準備中..."
+                errorMessage = null
 
-    // ファイルが変更されたときに保存されたページに移動
-    LaunchedEffect(currentFileId) {
-        if (currentFileId != null && isImageViewerReady) {
-            val state = currentImageViewerState ?: return@LaunchedEffect
+                println("DEBUG: Starting simple file loading for ${file?.name ?: uri}")
 
-            if (lastSavedFileId == currentFileId) {
-                return@LaunchedEffect
-            }
-
-            val targetPage = state.initialPage.coerceIn(0, state.imageEntries.size - 1)
-
-            if (pagerState.currentPage != targetPage && pagerState.pageCount == state.imageEntries.size) {
-                try {
-                    pagerState.scrollToPage(targetPage)
-                    lastSavedFileId = currentFileId
-                } catch (e: Exception) {
-                    // エラーハンドリング
+                // リソースクリア
+                withContext(Dispatchers.IO) {
+                    directZipHandler.clearMemoryCache()
+                    directZipHandler.closeCurrentZipFile()
                 }
+
+                loadingMessage = "ZIP内の画像を検索中..."
+
+                // 画像エントリ取得
+                val imageEntryList = withContext(Dispatchers.IO) {
+                    directZipHandler.getImageEntriesFromZip(uri, file)
+                }
+
+                if (imageEntryList.isEmpty()) {
+                    errorMessage = "このZIPファイルには表示可能な画像がありません"
+                    isLoading = false
+                    return@launch
+                }
+
+                // 初期ページの決定
+                val initialPage = run {
+                    val savedPosition = directZipHandler.getSavedPosition(uri, file) ?: 0
+                    savedPosition.coerceIn(0, imageEntryList.size - 1)
+                }
+
+                // ナビゲーション情報の取得
+                val navigationInfo = file?.let { f ->
+                    fileNavigationManager.getNavigationInfo(f)
+                }
+
+                // 状態設定
+                currentImageViewerState = ImageViewerState(
+                    imageEntries = imageEntryList,
+                    currentZipUri = uri,
+                    currentZipFile = file,
+                    fileNavigationInfo = navigationInfo,
+                    initialPage = initialPage
+                )
+
+                isLoading = false
+                currentView = ViewState.ImageViewer
+
+                println("DEBUG: File loading completed successfully - ${imageEntryList.size} images")
+
+            } catch (e: Exception) {
+                println("ERROR: File loading failed: ${e.message}")
+                e.printStackTrace()
+                errorMessage = "ファイルの読み込みに失敗しました: ${e.message}"
+                isLoading = false
             }
         }
     }
 
     // ファイルナビゲーション処理
     fun navigateToZipFile(newZipFile: File, isNextFile: Boolean = false) {
-        mainScope.launch {
+        coroutineScope.launch {
             try {
+                println("DEBUG: Navigating to file: ${newZipFile.name} (isNext: $isNextFile)")
+
                 // 現在の位置を保存
                 currentImageViewerState?.let { state ->
                     if (pagerState.currentPage >= 0) {
@@ -141,212 +171,78 @@ fun MainScreen() {
                             pagerState.currentPage,
                             state.currentZipFile
                         )
+                        println("DEBUG: Saved position ${pagerState.currentPage} for ${state.currentZipFile?.name}")
                     }
                 }
 
-                // リソースクリア
-                withContext(Dispatchers.IO) {
-                    directZipHandler.clearMemoryCache()
-                    directZipHandler.closeCurrentZipFile()
-                }
-
-                // State Machine開始
-                stateMachine.processAction(
-                    FileLoadingStateMachine.LoadingAction.StartLoading(
-                        Uri.fromFile(newZipFile),
-                        newZipFile,
-                        isNextFile
-                    )
-                )
+                // 新しいファイルを読み込み
+                startSimpleFileLoading(Uri.fromFile(newZipFile), newZipFile)
 
             } catch (e: Exception) {
-                stateMachine.processAction(
-                    FileLoadingStateMachine.LoadingAction.FilePreparationFailed(e)
-                )
+                println("ERROR: Navigation failed: ${e.message}")
+                errorMessage = "ファイルの切り替えに失敗しました: ${e.message}"
             }
         }
     }
-
-    // ファイル読み込み開始処理
-    fun startFileLoading(uri: Uri, file: File? = null) {
-        mainScope.launch {
-            try {
-                // リソースクリア
-                withContext(Dispatchers.IO) {
-                    directZipHandler.clearMemoryCache()
-                    directZipHandler.closeCurrentZipFile()
-                }
-
-                // State Machine開始
-                stateMachine.processAction(
-                    FileLoadingStateMachine.LoadingAction.StartLoading(
-                        uri,
-                        file,
-                        isNextFile = false
-                    )
-                )
-
-            } catch (e: Exception) {
-                stateMachine.processAction(
-                    FileLoadingStateMachine.LoadingAction.FilePreparationFailed(e)
-                )
-            }
-        }
-    }
-
-    // State Machine状態変化の処理
-    LaunchedEffect(loadingState) {
-        when (val currentState = loadingState) {
-            is FileLoadingStateMachine.LoadingState.Idle -> {
-                // アイドル状態では特に何もしない
-            }
-
-            is FileLoadingStateMachine.LoadingState.StoppingUI -> {
-                // UI停止完了を通知して次の状態に遷移
-                kotlinx.coroutines.delay(50) // 短い遅延で確実に遷移
-                stateMachine.processAction(FileLoadingStateMachine.LoadingAction.UIStoppedComplete)
-            }
-
-            is FileLoadingStateMachine.LoadingState.CleaningResources -> {
-                mainScope.launch {
-                    try {
-                        withContext(Dispatchers.IO) {
-                            directZipHandler.clearMemoryCache()
-                            directZipHandler.closeCurrentZipFile()
-                        }
-                        stateMachine.processAction(FileLoadingStateMachine.LoadingAction.ResourcesClearedComplete)
-                    } catch (e: Exception) {
-                        stateMachine.processAction(
-                            FileLoadingStateMachine.LoadingAction.FilePreparationFailed(e)
-                        )
-                    }
-                }
-            }
-
-            is FileLoadingStateMachine.LoadingState.PreparingFile -> {
-                pendingRequest?.let { currentRequest ->
-                    mainScope.launch {
-                        try {
-                            val imageEntryList = withContext(Dispatchers.IO) {
-                                directZipHandler.getImageEntriesFromZip(
-                                    currentRequest.uri,
-                                    currentRequest.file
-                                )
-                            }
-
-                            val newState = if (imageEntryList.isEmpty()) {
-                                null
-                            } else {
-                                val initialPage = if (currentRequest.isNextFile) {
-                                    0
-                                } else {
-                                    val savedPosition = directZipHandler.getSavedPosition(
-                                        currentRequest.uri,
-                                        currentRequest.file
-                                    ) ?: 0
-                                    savedPosition.coerceIn(0, imageEntryList.size - 1)
-                                }
-
-                                val navigationInfo = currentRequest.file?.let { file ->
-                                    fileNavigationManager.getNavigationInfo(file)
-                                }
-
-                                ImageViewerState(
-                                    imageEntries = imageEntryList,
-                                    currentZipUri = currentRequest.uri,
-                                    currentZipFile = currentRequest.file,
-                                    fileNavigationInfo = navigationInfo,
-                                    initialPage = initialPage
-                                )
-                            }
-
-                            stateMachine.processAction(
-                                FileLoadingStateMachine.LoadingAction.FilePreparationComplete(
-                                    newState
-                                )
-                            )
-                        } catch (e: Exception) {
-                            stateMachine.processAction(
-                                FileLoadingStateMachine.LoadingAction.FilePreparationFailed(e)
-                            )
-                        }
-                    }
-                }
-            }
-
-            is FileLoadingStateMachine.LoadingState.Ready -> {
-                currentView = ViewState.ImageViewer
-            }
-
-            is FileLoadingStateMachine.LoadingState.Error -> {
-                currentView = ViewState.LocalFileList
-                stateMachine.processAction(FileLoadingStateMachine.LoadingAction.Reset)
-            }
-        }
-    }
-
-    // Permission state for external storage
-    val storagePermissionState = rememberPermissionState(
-        android.Manifest.permission.READ_EXTERNAL_STORAGE
-    )
 
     // Zip file picker launcher
     val zipPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         uri?.let {
-            startFileLoading(uri, null)
+            startSimpleFileLoading(uri, null)
         }
     }
 
-    // 現在の位置を保存
-    LaunchedEffect(pagerState.currentPage, currentFileId) {
+    // ページ変更時の保存処理
+    LaunchedEffect(pagerState.currentPage, currentImageViewerState?.fileId) {
         val state = currentImageViewerState
         val currentPage = pagerState.currentPage
 
-        if (state != null && currentPage >= 0 && currentFileId != null) {
-            if (lastSavedPage == currentPage && lastSavedFileId == currentFileId) {
-                return@LaunchedEffect
-            }
+        if (state != null && currentPage >= 0 && !isLoading) {
+            delay(1000) // 1秒後に保存
 
-            if (stateMachine.isLoading()) {
-                return@LaunchedEffect
-            }
-
-            kotlinx.coroutines.delay(500)
-
-            val finalState = currentImageViewerState
-            val finalPage = pagerState.currentPage
-
-            if (finalState != null &&
-                finalState.fileId == currentFileId &&
-                finalPage >= 0 &&
-                finalPage < finalState.imageEntries.size &&
-                !stateMachine.isLoading()
+            // 状態が変わっていないことを確認
+            if (currentImageViewerState?.fileId == state.fileId &&
+                pagerState.currentPage == currentPage &&
+                !isLoading
             ) {
-
                 try {
                     directZipHandler.saveCurrentPosition(
-                        finalState.currentZipUri,
-                        finalPage,
-                        finalState.currentZipFile
+                        state.currentZipUri,
+                        currentPage,
+                        state.currentZipFile
                     )
-
-                    lastSavedPage = finalPage
-                    lastSavedFileId = currentFileId
+                    println("DEBUG: Auto-saved position $currentPage")
                 } catch (e: Exception) {
-                    // エラーハンドリング
+                    println("ERROR: Failed to save position: ${e.message}")
+                }
+            }
+        }
+    }
+
+    // 初期ページ設定
+    LaunchedEffect(currentImageViewerState?.fileId) {
+        val state = currentImageViewerState
+        if (state != null && !isLoading) {
+            if (pagerState.currentPage != state.initialPage &&
+                pagerState.pageCount == state.imageEntries.size
+            ) {
+                try {
+                    pagerState.scrollToPage(state.initialPage)
+                    println("DEBUG: Scrolled to initial page ${state.initialPage}")
+                } catch (e: Exception) {
+                    println("ERROR: Failed to scroll to initial page: ${e.message}")
                 }
             }
         }
     }
 
     // Auto-hide top bar
-    LaunchedEffect(showTopBar, currentFileId) {
-        if (showTopBar && currentFileId != null && isImageViewerReady) {
-            kotlinx.coroutines.delay(3000)
-
-            if (showTopBar && currentImageViewerState?.fileId == currentFileId) {
+    LaunchedEffect(showTopBar, currentImageViewerState?.fileId) {
+        if (showTopBar && currentImageViewerState != null && !isLoading) {
+            delay(3000)
+            if (showTopBar && currentImageViewerState?.fileId == currentImageViewerState?.fileId) {
                 showTopBar = false
             }
         }
@@ -355,23 +251,27 @@ fun MainScreen() {
     // クリーンアップ
     DisposableEffect(Unit) {
         onDispose {
+            println("DEBUG: MainScreen disposing")
             try {
-                directZipHandler.clearMemoryCache()
-                directZipHandler.closeCurrentZipFile()
-                directZipHandler.cleanup()
+                runBlocking {
+                    directZipHandler.clearMemoryCache()
+                    directZipHandler.closeCurrentZipFile()
+                    directZipHandler.cleanup()
+                }
+                println("DEBUG: Cleanup completed")
             } catch (e: Exception) {
-                // エラーハンドリング
+                println("ERROR: Cleanup error: ${e.message}")
             }
         }
     }
 
-    // 画面遷移のハンドリング
+    // UI表示
     when (currentView) {
         is ViewState.LocalFileList -> {
             FileSelectionScreen(
                 initialPath = savedDirectoryPath,
                 onFileSelected = { file ->
-                    startFileLoading(Uri.fromFile(file), file)
+                    startSimpleFileLoading(Uri.fromFile(file), file)
                 },
                 onDirectoryChanged = { path ->
                     savedDirectoryPath = path
@@ -389,27 +289,64 @@ fun MainScreen() {
                 onOpenSettings = {
                     currentView = ViewState.Settings
                 },
-                isLoading = stateMachine.isLoading(),
+                isLoading = isLoading,
                 onReturnFromViewer = if (lastReadingProgress != null) {
-                    {
-                        // 処理
-                    }
+                    { /* 処理 */ }
                 } else null,
                 readingStatusUpdate = lastReadingProgress,
                 fileCompletionUpdate = fileCompletionUpdate
             )
+
+            // エラー表示
+            if (errorMessage != null) {
+                LaunchedEffect(errorMessage) {
+                    delay(5000)
+                    errorMessage = null
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.8f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        modifier = Modifier
+                            .background(Color.Red.copy(alpha = 0.9f), RoundedCornerShape(16.dp))
+                            .padding(24.dp)
+                    ) {
+                        Text(
+                            text = "エラー",
+                            color = Color.White,
+                            style = MaterialTheme.typography.headlineSmall
+                        )
+                        Text(
+                            text = errorMessage!!,
+                            color = Color.White,
+                            style = MaterialTheme.typography.bodyMedium,
+                            textAlign = TextAlign.Center
+                        )
+                        Button(
+                            onClick = { errorMessage = null },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color.White,
+                                contentColor = Color.Red
+                            )
+                        ) {
+                            Text("閉じる")
+                        }
+                    }
+                }
+            }
         }
 
         is ViewState.ImageViewer -> {
             val state = currentImageViewerState
 
-            val isActuallyLoading = when (loadingState) {
-                is FileLoadingStateMachine.LoadingState.Idle -> false
-                is FileLoadingStateMachine.LoadingState.Ready -> false
-                else -> true
-            }
-
-            if (isActuallyLoading || state == null || state.imageEntries.isEmpty()) {
+            if (isLoading || state == null) {
+                // ローディング画面
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -424,19 +361,11 @@ fun MainScreen() {
                             color = Color.White,
                             modifier = Modifier.size(48.dp)
                         )
-
-                        val statusText = when (loadingState) {
-                            is FileLoadingStateMachine.LoadingState.CleaningResources -> "リソースをクリア中..."
-                            is FileLoadingStateMachine.LoadingState.PreparingFile -> "ファイルを準備中..."
-                            else -> "ファイルを読み込み中..."
-                        }
-
                         Text(
-                            text = statusText,
+                            text = loadingMessage.ifEmpty { "読み込み中..." },
                             color = Color.White,
                             style = MaterialTheme.typography.bodyMedium
                         )
-
                         if (state != null) {
                             Text(
                                 text = "ファイル: ${state.currentZipFile?.name ?: "不明"}",
@@ -447,6 +376,7 @@ fun MainScreen() {
                     }
                 }
             } else {
+                // 画像ビューア画面
                 DirectZipImageViewerScreen(
                     imageEntries = state.imageEntries,
                     currentZipFile = state.currentZipFile,
@@ -457,22 +387,9 @@ fun MainScreen() {
                         currentView = ViewState.LocalFileList
                     },
                     onNavigateToPreviousFile = {
-                        mainScope.launch {
+                        coroutineScope.launch {
                             state.currentZipFile?.let { currentFile ->
-                                val currentPage = pagerState.currentPage
-                                lastReadingProgress = Pair(currentFile, currentPage)
-
-                                try {
-                                    withContext(Dispatchers.IO) {
-                                        directZipHandler.saveCurrentPosition(
-                                            state.currentZipUri,
-                                            currentPage,
-                                            currentFile
-                                        )
-                                    }
-                                } catch (e: Exception) {
-                                    // エラーハンドリング
-                                }
+                                lastReadingProgress = Pair(currentFile, pagerState.currentPage)
                             }
 
                             state.fileNavigationInfo?.previousFile?.let { previousFile ->
@@ -481,22 +398,9 @@ fun MainScreen() {
                         }
                     },
                     onNavigateToNextFile = {
-                        mainScope.launch {
+                        coroutineScope.launch {
                             state.currentZipFile?.let { currentFile ->
-                                val currentPage = pagerState.currentPage
                                 fileCompletionUpdate = currentFile
-
-                                try {
-                                    withContext(Dispatchers.IO) {
-                                        directZipHandler.saveCurrentPosition(
-                                            state.currentZipUri,
-                                            currentPage,
-                                            currentFile
-                                        )
-                                    }
-                                } catch (e: Exception) {
-                                    // エラーハンドリング
-                                }
                             }
 
                             state.fileNavigationInfo?.nextFile?.let { nextFile ->
@@ -509,7 +413,6 @@ fun MainScreen() {
                     directZipHandler = directZipHandler,
                     onPageChanged = { currentPage, totalPages, zipFile ->
                         lastReadingProgress = Pair(zipFile, currentPage)
-
                         if (currentPage >= totalPages - 1) {
                             fileCompletionUpdate = zipFile
                         }

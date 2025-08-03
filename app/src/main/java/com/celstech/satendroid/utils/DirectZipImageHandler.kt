@@ -19,13 +19,13 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * ZipFileの安全な管理クラス
+ * ZipFileの安全な管理クラス（完全同期化版）
  * 参照カウントとタイムアウト機能で適切な資源管理を行う
  */
 class ZipFileManager {
     private val zipFiles = ConcurrentHashMap<String, ZipFileEntry>()
-    private val lock = Any()
-
+    private val accessMutex = Mutex() // 同期化用Mutex
+    
     // ZipFileエントリの情報
     data class ZipFileEntry(
         val zipFile: ZipFile,
@@ -33,27 +33,29 @@ class ZipFileManager {
         val refCount: AtomicInteger,
         val filePath: String
     )
-
+    
     companion object {
         private const val TIMEOUT_MS = 30000L // 30秒でタイムアウト
         private const val CLEANUP_INTERVAL_MS = 10000L // 10秒間隔でクリーンアップ
     }
-
+    
     private val cleanupJob = CoroutineScope(Dispatchers.IO).launch {
         while (true) {
             delay(CLEANUP_INTERVAL_MS)
             cleanupExpiredEntries()
         }
     }
-
+    
     /**
-     * ZipFileを安全に取得または作成
+     * ZipFileを安全に取得または作成（完全同期化版）
      */
-    fun getZipFile(filePath: String): ZipFile? {
-        return synchronized(lock) {
+    suspend fun getZipFile(filePath: String): ZipFile? {
+        return accessMutex.withLock {
             try {
                 val currentTime = System.currentTimeMillis()
-
+                
+                println("DEBUG: ZipFileManager.getZipFile called for: $filePath")
+                
                 // 既存のエントリをチェック
                 zipFiles[filePath]?.let { entry ->
                     // タイムアウトチェック
@@ -62,20 +64,28 @@ class ZipFileManager {
                         entry.refCount.incrementAndGet()
                         entry.lastAccessed.set(currentTime)
                         println("DEBUG: ZipFileManager - Reusing existing ZipFile: ${File(filePath).name}")
-                        return entry.zipFile
+                        return@withLock entry.zipFile
                     } else {
                         // タイムアウトしたエントリを削除
-                        closeZipFileEntry(filePath, entry)
+                        println("DEBUG: ZipFileManager - Removing timed out entry: ${File(filePath).name}")
+                        closeZipFileEntryInternal(filePath, entry)
                     }
                 }
-
+                
                 // 新しいZipFileを作成
                 val file = File(filePath)
                 if (!file.exists()) {
-                    println("DEBUG: ZipFileManager - File does not exist: ${file.name}")
-                    return null
+                    println("ERROR: ZipFileManager - File does not exist: ${file.absolutePath}")
+                    return@withLock null
                 }
-
+                
+                if (!file.canRead()) {
+                    println("ERROR: ZipFileManager - File is not readable: ${file.absolutePath}")
+                    return@withLock null
+                }
+                
+                println("DEBUG: ZipFileManager - Creating new ZipFile for: ${file.name} (${file.length()} bytes)")
+                
                 val zipFile = ZipFile(file)
                 val entry = ZipFileEntry(
                     zipFile = zipFile,
@@ -83,35 +93,45 @@ class ZipFileManager {
                     refCount = AtomicInteger(1),
                     filePath = filePath
                 )
-
+                
                 zipFiles[filePath] = entry
                 println("DEBUG: ZipFileManager - Created new ZipFile: ${file.name}")
-                return zipFile
-
+                
+                // ZipFileの基本情報をログ出力
+                try {
+                    val entryCount = zipFile.entries().toList().size
+                    println("DEBUG: ZipFile contains $entryCount entries")
+                } catch (e: Exception) {
+                    println("WARNING: Could not count ZipFile entries: ${e.message}")
+                }
+                
+                return@withLock zipFile
+                
             } catch (e: Exception) {
-                println("DEBUG: ZipFileManager - Failed to get ZipFile: ${e.message}")
-                return null
+                println("ERROR: ZipFileManager - Failed to create ZipFile for $filePath: ${e.message}")
+                e.printStackTrace()
+                return@withLock null
             }
         }
     }
-
+    
     /**
-     * ZipFileの参照を解放
+     * ZipFileの参照を解放（完全同期化版）
      */
-    fun releaseZipFile(filePath: String) {
-        synchronized(lock) {
+    suspend fun releaseZipFile(filePath: String) {
+        accessMutex.withLock {
             zipFiles[filePath]?.let { entry ->
                 val newRefCount = entry.refCount.decrementAndGet()
                 println("DEBUG: ZipFileManager - Released ZipFile: ${File(filePath).name}, refCount: $newRefCount")
-
+                
                 // 参照カウントが0になったら遅延削除のタイマーを開始
                 if (newRefCount <= 0) {
                     CoroutineScope(Dispatchers.IO).launch {
                         delay(5000) // 5秒後に削除
-                        synchronized(lock) {
+                        accessMutex.withLock {
                             zipFiles[filePath]?.let { currentEntry ->
                                 if (currentEntry.refCount.get() <= 0) {
-                                    closeZipFileEntry(filePath, currentEntry)
+                                    closeZipFileEntryInternal(filePath, currentEntry)
                                 }
                             }
                         }
@@ -120,87 +140,89 @@ class ZipFileManager {
             }
         }
     }
-
+    
     /**
-     * 指定されたZipFileを強制的に閉じる
+     * 指定されたZipFileを強制的に閉じる（完全同期化版）
      */
-    fun forceCloseZipFile(filePath: String) {
-        synchronized(lock) {
+    suspend fun forceCloseZipFile(filePath: String) {
+        accessMutex.withLock {
             zipFiles[filePath]?.let { entry ->
-                closeZipFileEntry(filePath, entry)
+                closeZipFileEntryInternal(filePath, entry)
             }
         }
     }
-
+    
     /**
-     * 期限切れのエントリをクリーンアップ
+     * 期限切れのエントリをクリーンアップ（完全同期化版）
      */
-    private fun cleanupExpiredEntries() {
+    private suspend fun cleanupExpiredEntries() {
         val currentTime = System.currentTimeMillis()
         val toRemove = mutableListOf<String>()
         
-        synchronized(lock) {
+        accessMutex.withLock {
             zipFiles.forEach { (filePath, entry) ->
                 val timeSinceLastAccess = currentTime - entry.lastAccessed.get()
                 if (timeSinceLastAccess > TIMEOUT_MS && entry.refCount.get() <= 0) {
                     toRemove.add(filePath)
                 }
             }
-
+            
             toRemove.forEach { filePath ->
                 zipFiles[filePath]?.let { entry ->
-                    closeZipFileEntry(filePath, entry)
+                    closeZipFileEntryInternal(filePath, entry)
                 }
             }
         }
-
+        
         if (toRemove.isNotEmpty()) {
             println("DEBUG: ZipFileManager - Cleaned up ${toRemove.size} expired entries")
         }
     }
-
+    
     /**
-     * ZipFileエントリを安全に閉じる
+     * ZipFileエントリを安全に閉じる（内部用、既にロック済みを前提）
      */
-    private fun closeZipFileEntry(filePath: String, entry: ZipFileEntry) {
+    private fun closeZipFileEntryInternal(filePath: String, entry: ZipFileEntry) {
         try {
             entry.zipFile.close()
             zipFiles.remove(filePath)
             println("DEBUG: ZipFileManager - Closed and removed ZipFile: ${File(filePath).name}")
-        } catch (e: Exception) {
-            println("DEBUG: ZipFileManager - Error closing ZipFile: ${e.message}")
+        } catch (_: Exception) {
+            println("DEBUG: ZipFileManager - Error closing ZipFile")
             // エラーが発生してもマップからは削除
             zipFiles.remove(filePath)
         }
     }
-
+    
     /**
-     * 全てのZipFileを閉じる
+     * 全てのZipFileを閉じる（完全同期化版）
      */
-    fun closeAllZipFiles() {
-        synchronized(lock) {
+    suspend fun closeAllZipFiles() {
+        accessMutex.withLock {
             val entries = zipFiles.values.toList()
             zipFiles.clear()
-
+            
             entries.forEach { entry ->
                 try {
                     entry.zipFile.close()
                     println("DEBUG: ZipFileManager - Closed ZipFile during cleanup: ${File(entry.filePath).name}")
-                } catch (e: Exception) {
-                    println("DEBUG: ZipFileManager - Error closing ZipFile during cleanup: ${e.message}")
+                } catch (_: Exception) {
+                    println("DEBUG: ZipFileManager - Error closing ZipFile during cleanup")
                 }
             }
         }
-
+        
         cleanupJob.cancel()
         println("DEBUG: ZipFileManager - All ZipFiles closed and cleanup job canceled")
     }
-
+    
     /**
-     * 現在管理されているZipFileの数を取得
+     * 現在管理されているZipFileの数を取得（同期化版）
      */
-    fun getActiveZipFileCount(): Int {
-        return zipFiles.size
+    suspend fun getActiveZipFileCount(): Int {
+        return accessMutex.withLock {
+            zipFiles.size
+        }
     }
 }
 
@@ -214,6 +236,11 @@ class DirectZipImageHandler(private val context: Context) {
     // ZipFile管理
     private val zipFileManager = ZipFileManager()
 
+    // 同期化用Mutex群
+    private val cacheMutex = Mutex() // キャッシュ操作用
+    private val stateMutex = Mutex() // 状態変更用
+    private val metricsMutex = Mutex() // メトリクス更新用
+
     // サポートされる画像拡張子
     private val supportedExtensions = setOf("jpg", "jpeg", "png", "gif", "bmp", "webp")
 
@@ -225,13 +252,16 @@ class DirectZipImageHandler(private val context: Context) {
     private val preloadChannel = Channel<PreloadRequest>(capacity = 20) // キャパシティ制限
     private val activePreloadJobs = ConcurrentHashMap<String, Job>()
 
-    // プリロード制御用のMutexと実行数制限（同時実行数制限）
-    private val preloadMutex = Mutex()
+    // プリロード制御用の実行数制限（同時実行数制限）
     private val activePreloadCount = AtomicInteger(0)
     private val maxConcurrentPreloads = 3 // 最大3つまで同時プリロード
+    
+    // Phase 2: プリロード機能の段階的再有効化
+    // 保守的な設定で有効化開始
+    private val enablePreload = true
 
-    // メモリ監視
-    private val maxMemoryUsage = Runtime.getRuntime().maxMemory() / 4 // 最大メモリの25%
+    // メモリ監視（Phase 2: より保守的な設定）
+    private val maxMemoryUsage = Runtime.getRuntime().maxMemory() / 5 // 最大メモリの20%（25%から削減）
     private val currentMemoryUsage = AtomicLong(0)
 
     // 位置保存のバッチ処理
@@ -240,14 +270,16 @@ class DirectZipImageHandler(private val context: Context) {
     // ZIP エントリキャッシュ（ファイル全体の読み込み回避）
     private val zipEntryCache = ConcurrentHashMap<String, ZipEntryData>()
 
-    // キャッシュサイズ制限（動的調整）
-    private val maxCacheSize = 20 // 最大20画像をキャッシュ（50から削減）
-    private val preloadRange = 2 // 前後2ページをプリロード（3から削減）
+    // キャッシュサイズ制限（Phase 2: より保守的な設定）
+    private val maxCacheSize = 15 // 最大15画像をキャッシュ（20から削減）
+    private val preloadRange = 1 // 前後1ページをプリロード（2から削減）
     private val minPreloadRange = 1 // 最小プリロード範囲
-    private val maxPreloadRange = 3 // 最大プリロード範囲
+    private val maxPreloadRange = 2 // 最大プリロード範囲（3から削減）
 
-    // 現在のZIPファイル情報
+    // 現在のZIPファイル情報（同期化対象）
+    @Volatile
     private var currentZipUri: Uri? = null
+    @Volatile
     private var currentZipEntries: List<ZipImageEntry> = emptyList()
 
     // パフォーマンス監視
@@ -279,114 +311,154 @@ class DirectZipImageHandler(private val context: Context) {
     }
 
     /**
-     * プリロードワーカーの開始（制御強化版）
+     * プリロードワーカーの開始（Phase 2: 安定性向上版）
      */
     private fun startPreloadWorker() {
         // プリロードチャンネルの処理
         preloadScope.launch {
-            for (request in preloadChannel) {
-                // 重複チェック（既にキャッシュされているかアクティブな処理があるか）
-                if (imageDataCache.containsKey(request.entry.id) ||
-                    activePreloadJobs.containsKey(request.requestId)
-                ) {
-                    continue
-                }
-
-                // メモリ使用量チェック
-                if (currentMemoryUsage.get() > maxMemoryUsage) {
-                    println("DEBUG: Skipping preload due to memory limit: ${request.entry.fileName}")
-                    cleanupOldCache() // 強制的にクリーンアップを実行
-                    continue
-                }
-
-                // Mutexとカウンターで同時実行数を制限
-                val job = preloadScope.launch {
-                    // 実行数チェック
-                    while (activePreloadCount.get() >= maxConcurrentPreloads) {
-                        delay(50) // 少し待機してリトライ
-                    }
-                    
-                    activePreloadCount.incrementAndGet()
+            try {
+                println("DEBUG: Phase 2 Preload worker started")
+                
+                for (request in preloadChannel) {
                     try {
-                        executePreload(request)
-                    } finally {
-                        activePreloadCount.decrementAndGet()
-                        activePreloadJobs.remove(request.requestId)
+                        // 重複チェック（既にキャッシュされているかアクティブな処理があるか）
+                        if (imageDataCache.containsKey(request.entry.id) ||
+                            activePreloadJobs.containsKey(request.requestId)
+                        ) {
+                            println("DEBUG: Phase 2 Skipping duplicate preload request: ${request.entry.fileName}")
+                            continue
+                        }
+
+                        // メモリ使用量チェック（Phase 2: より厳格）
+                        val memoryPercent = (currentMemoryUsage.get().toFloat() / maxMemoryUsage) * 100
+                        if (memoryPercent > 75) {
+                            println("DEBUG: Phase 2 Skipping preload due to memory limit (${memoryPercent.toInt()}%): ${request.entry.fileName}")
+                            cleanupOldCache() // 強制的にクリーンアップを実行
+                            continue
+                        }
+
+                        // Mutexとカウンターで同時実行数を制限
+                        val job = preloadScope.launch {
+                            // 実行数チェック（Phase 2: より短い待機時間）
+                            var waitCount = 0
+                            while (activePreloadCount.get() >= maxConcurrentPreloads) {
+                                delay(100) // 100ms待機してリトライ
+                                waitCount++
+                                if (waitCount > 50) { // 5秒でタイムアウト
+                                    println("DEBUG: Phase 2 Preload timeout, skipping: ${request.entry.fileName}")
+                                    return@launch
+                                }
+                            }
+                            
+                            activePreloadCount.incrementAndGet()
+                            try {
+                                executePreload(request)
+                            } finally {
+                                activePreloadCount.decrementAndGet()
+                                activePreloadJobs.remove(request.requestId)
+                            }
+                        }
+
+                        activePreloadJobs[request.requestId] = job
+                        
+                    } catch (e: Exception) {
+                        println("ERROR: Phase 2 Exception in preload worker loop: ${e.message}")
                     }
                 }
-
-                activePreloadJobs[request.requestId] = job
+            } catch (e: Exception) {
+                println("ERROR: Phase 2 Preload worker crashed: ${e.message}")
+                e.printStackTrace()
             }
         }
 
-        // 定期的なメモリ監視とクリーンアップ
+        // 定期的なメモリ監視とクリーンアップ（Phase 2: より頻繁な監視）
         preloadScope.launch {
-            while (true) {
-                delay(5000) // 5秒間隔
-                monitorMemoryAndCleanup()
+            try {
+                while (true) {
+                    delay(3000) // 3秒間隔（5秒から短縮）
+                    monitorMemoryAndCleanup()
+                }
+            } catch (e: Exception) {
+                println("ERROR: Phase 2 Memory monitor crashed: ${e.message}")
             }
         }
     }
 
     /**
-     * 実際のプリロード処理を実行
+     * 実際のプリロード処理を実行（Phase 2: 安定性向上版）
      */
     private suspend fun executePreload(request: PreloadRequest) {
         try {
             val startTime = System.currentTimeMillis()
-            println("DEBUG: Starting preload for ${request.entry.fileName} (priority: ${request.priority})")
+            println("DEBUG: Phase 2 Starting preload for ${request.entry.fileName} (priority: ${request.priority})")
+
+            // 重複チェック（実行直前に再確認）
+            if (imageDataCache.containsKey(request.entry.id)) {
+                println("DEBUG: Phase 2 Preload skipped - already cached: ${request.entry.fileName}")
+                return
+            }
+
+            // メモリ制限の最終チェック
+            val currentMemory = currentMemoryUsage.get()
+            val memoryPercent = (currentMemory.toFloat() / maxMemoryUsage) * 100
+            
+            if (memoryPercent > 80) {
+                println("DEBUG: Phase 2 Preload skipped - high memory usage (${memoryPercent.toInt()}%): ${request.entry.fileName}")
+                return
+            }
 
             val imageData = loadImageFromZip(request.entry)
             val loadTime = System.currentTimeMillis() - startTime
 
-            if (imageData != null) {
-                // キャッシュサイズと メモリ使用量をチェック
-                val imageSize = imageData.size.toLong()
-                if (imageDataCache.size >= maxCacheSize ||
-                    currentMemoryUsage.get() + imageSize > maxMemoryUsage
-                ) {
-
-                    cleanupOldCache()
-
-                    // クリーンアップ後も制限を超える場合はスキップ
-                    if (currentMemoryUsage.get() + imageSize > maxMemoryUsage) {
-                        println("DEBUG: Skipping preload due to memory constraints: ${request.entry.fileName}")
-                        return
-                    }
+            if (imageData != null && imageData.isNotEmpty()) {
+                // 原子的にキャッシュに追加
+                val addedToCache = addImageToCache(request.entry, imageData)
+                
+                if (addedToCache) {
+                    println("DEBUG: Phase 2 Successfully preloaded ${request.entry.fileName}")
+                    println("        - Size: ${imageData.size} bytes, Time: ${loadTime}ms")
+                    println("        - Memory: ${currentMemoryUsage.get() / 1024 / 1024}MB / ${maxMemoryUsage / 1024 / 1024}MB")
+                    
+                    // メトリクス更新
+                    updateMetrics(loadTime, isPreload = true)
+                } else {
+                    println("DEBUG: Phase 2 Preload failed to add to cache (memory constraints): ${request.entry.fileName}")
                 }
-
-                imageDataCache[request.entry.id] = imageData
-                currentMemoryUsage.addAndGet(imageSize)
-
-                println("DEBUG: Preloaded ${request.entry.fileName} (${imageData.size} bytes) in ${loadTime}ms")
-                println("DEBUG: Memory usage: ${currentMemoryUsage.get() / 1024 / 1024}MB / ${maxMemoryUsage / 1024 / 1024}MB")
-
-                // メトリクス更新
-                updateMetrics(loadTime, isPreload = true)
+            } else {
+                println("WARNING: Phase 2 Preload returned empty data: ${request.entry.fileName}")
             }
 
         } catch (e: Exception) {
-            println("DEBUG: Preload failed for ${request.entry.fileName}: ${e.message}")
+            println("ERROR: Phase 2 Preload failed for ${request.entry.fileName}: ${e.message}")
+            // スタックトレースは重要なエラーの場合のみ
+            if (e !is IOException) {
+                e.printStackTrace()
+            }
         }
     }
 
     /**
-     * メモリ監視とクリーンアップ
+     * メモリ監視とクリーンアップ（Phase 2: より保守的な設定）
      */
     private fun monitorMemoryAndCleanup() {
         val memoryUsage = currentMemoryUsage.get()
         val memoryUsagePercent = (memoryUsage.toFloat() / maxMemoryUsage) * 100
 
-        println("DEBUG: Memory monitor - Usage: ${memoryUsage / 1024 / 1024}MB (${memoryUsagePercent.toInt()}%)")
-        println("DEBUG: Active preloads: ${activePreloadJobs.size}, Cache size: ${imageDataCache.size}")
+        println("DEBUG: Phase 2 Memory monitor - Usage: ${memoryUsage / 1024 / 1024}MB (${memoryUsagePercent.toInt()}%)")
+        println("DEBUG: Active preloads: ${activePreloadJobs.size}, Cache size: ${imageDataCache.size}/$maxCacheSize")
 
-        // メモリ使用量が80%を超えたら積極的にクリーンアップ
-        if (memoryUsagePercent > 80) {
-            println("DEBUG: High memory usage detected, performing aggressive cleanup")
-            cleanupOldCache()
+        // Phase 2: より保守的なメモリ管理（70%でクリーンアップ開始、80%で積極的クリーンアップ）
+        if (memoryUsagePercent > 70) {
+            println("DEBUG: Phase 2 Memory usage above 70%, performing cleanup")
+            
+            // 非同期でクリーンアップを実行
+            preloadScope.launch {
+                cleanupOldCache()
+            }
 
-            // さらに必要なら一時的にプリロードを停止
-            if (memoryUsagePercent > 90) {
+            // さらに必要なら一時的にプリロードを停止（80%超過時）
+            if (memoryUsagePercent > 80) {
+                println("WARNING: Phase 2 High memory usage (${memoryUsagePercent.toInt()}%), canceling active preloads")
                 cancelAllActivePreloads()
                 System.gc()
             }
@@ -443,7 +515,7 @@ class DirectZipImageHandler(private val context: Context) {
     }
 
     /**
-     * ZIPファイルから画像エントリのリストを取得（高速化・非同期版）
+     * ZIPファイルから画像エントリのリストを取得（完全同期化版）
      */
     suspend fun getImageEntriesFromZip(zipUri: Uri, zipFile: File? = null): List<ZipImageEntry> =
         withContext(Dispatchers.IO) {
@@ -453,8 +525,11 @@ class DirectZipImageHandler(private val context: Context) {
             // キャッシュから取得を試行
             zipEntryCache[zipKey]?.let { cachedData ->
                 if (cachedData.lastModified == fileModified) {
-                    currentZipUri = zipUri
-                    currentZipEntries = cachedData.entries
+                    // 状態更新を同期化
+                    stateMutex.withLock {
+                        currentZipUri = zipUri
+                        currentZipEntries = cachedData.entries
+                    }
                     println("DEBUG: Using cached entries for ${zipFile?.name ?: zipUri}")
                     return@withContext cachedData.entries
                 }
@@ -509,20 +584,58 @@ class DirectZipImageHandler(private val context: Context) {
             // ファイル名でソート（バックグラウンドで実行）
             val sortedEntries = imageEntries.sortedBy { it.fileName }
 
-            // キャッシュに保存
-            zipEntryCache[zipKey] = ZipEntryData(sortedEntries, fileModified)
-            currentZipUri = zipUri
-            currentZipEntries = sortedEntries
+            // キャッシュに保存と状態更新を同期化
+            stateMutex.withLock {
+                zipEntryCache[zipKey] = ZipEntryData(sortedEntries, fileModified)
+                currentZipUri = zipUri
+                currentZipEntries = sortedEntries
+            }
 
             println("DEBUG: ZIP entry scanning completed - ${sortedEntries.size} images ready")
             return@withContext sortedEntries
         }
 
     /**
-     * 指定された画像エントリの画像データを取得（メモリ管理強化版）
+     * キャッシュに画像データを原子的に追加（Phase 2: より保守的な設定）
+     */
+    private suspend fun addImageToCache(imageEntry: ZipImageEntry, imageData: ByteArray): Boolean {
+        return cacheMutex.withLock {
+            val imageSize = imageData.size.toLong()
+            
+            // Phase 2: より厳格なメモリ制限チェック
+            if (imageDataCache.size >= maxCacheSize || 
+                currentMemoryUsage.get() + imageSize > maxMemoryUsage * 0.9) { // 90%でブロック（100%から変更）
+                
+                println("DEBUG: Phase 2 Cache size or memory limit reached, performing cleanup")
+                // クリーンアップを実行
+                cleanupOldCacheInternal()
+                
+                // クリーンアップ後も制限を超える場合は追加しない
+                if (currentMemoryUsage.get() + imageSize > maxMemoryUsage * 0.9) {
+                    println("DEBUG: Phase 2 Cannot add to cache after cleanup: ${imageEntry.fileName}")
+                    return@withLock false
+                }
+            }
+            
+            // 原子的に追加
+            imageDataCache[imageEntry.id] = imageData
+            currentMemoryUsage.addAndGet(imageSize)
+            
+            println("DEBUG: Phase 2 Added to cache: ${imageEntry.fileName} (${imageData.size} bytes)")
+            println("DEBUG: Current memory usage: ${currentMemoryUsage.get() / 1024 / 1024}MB / ${maxMemoryUsage / 1024 / 1024}MB")
+            
+            return@withLock true
+        }
+    }
+    
+    /**
+     * 指定された画像エントリの画像データを取得（基本機能修復版）
      */
     suspend fun getImageData(imageEntry: ZipImageEntry): ByteArray? = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
+        
+        println("DEBUG: getImageData called for ${imageEntry.fileName}")
+        println("DEBUG: Entry details - ID: ${imageEntry.id}, Size: ${imageEntry.size}")
 
         // キャッシュから取得を試行
         imageDataCache[imageEntry.id]?.let {
@@ -542,28 +655,26 @@ class DirectZipImageHandler(private val context: Context) {
 
         val imageData = loadImageFromZip(imageEntry)
         val loadTime = System.currentTimeMillis() - startTime
+        
+        println("DEBUG: loadImageFromZip returned ${imageData?.size ?: 0} bytes for ${imageEntry.fileName}")
 
         if (imageData != null) {
-            val imageSize = imageData.size.toLong()
-
-            // キャッシュサイズとメモリ使用量をチェック
-            if (imageDataCache.size >= maxCacheSize ||
-                currentMemoryUsage.get() + imageSize > maxMemoryUsage
-            ) {
-                cleanupOldCache()
+            // 原子的にキャッシュに追加
+            val addedToCache = addImageToCache(imageEntry, imageData)
+            
+            println("DEBUG: Added to cache: $addedToCache for ${imageEntry.fileName}")
+            
+            if (addedToCache) {
+            // プリロードは基本機能確認後に段階的に有効化
+            if (addedToCache && enablePreload) {
+                preloadScope.launch {
+                    delay(1000) // 1秒後にプリロード開始（500msから延長してより安定化）
+                    triggerPreload(imageEntry.index)
+                }
             }
-
-            imageDataCache[imageEntry.id] = imageData
-            currentMemoryUsage.addAndGet(imageSize)
-
-            println("DEBUG: Loaded ${imageEntry.fileName} (${imageData.size} bytes) in ${loadTime}ms")
-            println("DEBUG: Current memory usage: ${currentMemoryUsage.get() / 1024 / 1024}MB")
-
-            // プリロードは遅延実行（初回表示への影響を最小化）
-            preloadScope.launch {
-                delay(500) // 500ms後にプリロード開始
-                triggerPreload(imageEntry.index)
             }
+        } else {
+            println("ERROR: Failed to load image data for ${imageEntry.fileName}")
         }
 
         updateMetrics(loadTime, isHit = false)
@@ -575,175 +686,292 @@ class DirectZipImageHandler(private val context: Context) {
      */
     private suspend fun loadImageFromZip(imageEntry: ZipImageEntry): ByteArray? =
         withContext(Dispatchers.IO) {
+            println("DEBUG: loadImageFromZip called for ${imageEntry.fileName}")
+            println("DEBUG: Entry name: ${imageEntry.entryName}")
+            println("DEBUG: ZIP URI: ${imageEntry.zipUri}")
+            println("DEBUG: ZIP File: ${imageEntry.zipFile?.absolutePath}")
+            
             // 最適化読み込みを試行
             val optimizedResult = tryOptimizedRead(imageEntry)
             if (optimizedResult != null) {
+                println("DEBUG: Optimized read successful for ${imageEntry.fileName}: ${optimizedResult.size} bytes")
                 return@withContext optimizedResult
             }
+
+            println("DEBUG: Optimized read failed, falling back to ZipInputStream for ${imageEntry.fileName}")
 
             // フォールバック: ZipInputStreamを使用した従来の方法
             try {
                 context.contentResolver.openInputStream(imageEntry.zipUri)?.use { inputStream ->
+                    println("DEBUG: Opened InputStream for ${imageEntry.zipUri}")
+                    
                     ZipInputStream(inputStream).use { zipInputStream ->
+                        println("DEBUG: Created ZipInputStream for ${imageEntry.fileName}")
+                        
                         var entry = zipInputStream.nextEntry
+                        var entryCount = 0
 
                         while (entry != null) {
+                            entryCount++
+                            println("DEBUG: Processing entry #$entryCount: ${entry.name}")
+                            
                             if (entry.name == imageEntry.entryName) {
-                                return@withContext zipInputStream.readBytes()
+                                println("DEBUG: Found target entry: ${entry.name}")
+                                println("DEBUG: Entry size: ${entry.size}")
+                                println("DEBUG: Entry compressed size: ${entry.compressedSize}")
+                                
+                                val data = zipInputStream.readBytes()
+                                println("DEBUG: Read ${data.size} bytes from ${imageEntry.fileName}")
+                                
+                                if (data.isNotEmpty()) {
+                                    // ファイルヘッダーをチェック
+                                    if (data.size >= 10) {
+                                        val header = data.take(10).joinToString(" ") { "0x%02x".format(it) }
+                                        println("DEBUG: File header: $header")
+                                    }
+                                }
+                                
+                                return@withContext data
                             }
 
                             zipInputStream.closeEntry()
                             entry = zipInputStream.nextEntry
+                            
+                            // 大量のエントリがある場合の進行状況
+                            if (entryCount % 100 == 0) {
+                                println("DEBUG: Processed $entryCount entries, still searching for ${imageEntry.entryName}")
+                            }
                         }
+                        
+                        println("ERROR: Entry not found in ZIP: ${imageEntry.entryName} (searched $entryCount entries)")
                     }
                 }
             } catch (e: IOException) {
-                println("DEBUG: loadImageFromZip failed for ${imageEntry.fileName}: ${e.message}")
+                println("ERROR: IOException in loadImageFromZip for ${imageEntry.fileName}: ${e.message}")
+                e.printStackTrace()
+            } catch (e: Exception) {
+                println("ERROR: Exception in loadImageFromZip for ${imageEntry.fileName}: ${e.message}")
                 e.printStackTrace()
             }
 
+            println("ERROR: Failed to load image ${imageEntry.fileName}")
             return@withContext null
         }
 
     /**
-     * 最適化された読み込みを試行（ZipFileManager使用版）
+     * 最適化された読み込みを試行（完全同期化版）
      */
     private suspend fun tryOptimizedRead(imageEntry: ZipImageEntry): ByteArray? =
         withContext(Dispatchers.IO) {
+            println("DEBUG: tryOptimizedRead called for ${imageEntry.fileName}")
+            
             val filePath = imageEntry.zipFile?.absolutePath ?: run {
                 if (imageEntry.zipUri.scheme == "file") {
                     imageEntry.zipUri.path
                 } else {
                     null
                 }
-            } ?: return@withContext null
+            } ?: run {
+                println("DEBUG: Cannot determine file path for optimized read: ${imageEntry.zipUri}")
+                return@withContext null
+            }
+
+            println("DEBUG: Using file path for optimized read: $filePath")
 
             var zipFile: ZipFile? = null
             try {
-                // ZipFileManagerから安全にZipFileを取得
+                // ZipFileManagerから安全にZipFileを取得（suspend対応）
                 zipFile = zipFileManager.getZipFile(filePath)
                 if (zipFile == null) {
                     println("DEBUG: Failed to get ZipFile from manager for ${imageEntry.fileName}")
                     return@withContext null
                 }
 
+                println("DEBUG: Successfully obtained ZipFile for ${imageEntry.fileName}")
+
                 // エントリを検索
                 val zipEntry = zipFile.getEntry(imageEntry.entryName)
                 if (zipEntry == null) {
                     println("DEBUG: Entry not found in ZipFile: ${imageEntry.entryName}")
+                    // 利用可能なエントリをリスト（デバッグ用）
+                    val entries = zipFile.entries().toList().take(10) // 最初の10個だけ
+                    println("DEBUG: Available entries (first 10):")
+                    entries.forEach { entry ->
+                        println("  - ${entry.name}")
+                    }
                     return@withContext null
                 }
+
+                println("DEBUG: Found entry in ZipFile: ${zipEntry.name}")
+                println("DEBUG: Entry size: ${zipEntry.size}")
+                println("DEBUG: Entry compressed size: ${zipEntry.compressedSize}")
 
                 // 画像データを読み込み
                 zipFile.getInputStream(zipEntry)?.use { inputStream ->
                     val data = inputStream.readBytes()
                     println("DEBUG: Successfully read ${data.size} bytes from optimized ZipFile for ${imageEntry.fileName}")
+                    
+                    if (data.isNotEmpty() && data.size >= 10) {
+                        val header = data.take(10).joinToString(" ") { "0x%02x".format(it) }
+                        println("DEBUG: Optimized read file header: $header")
+                    }
+                    
                     return@withContext data
                 }
 
+                println("ERROR: Failed to get InputStream from ZipEntry: ${imageEntry.entryName}")
                 return@withContext null
 
             } catch (e: Exception) {
-                println("DEBUG: Optimized read failed for ${imageEntry.fileName}: ${e.message}")
+                println("ERROR: Exception in tryOptimizedRead for ${imageEntry.fileName}: ${e.message}")
+                e.printStackTrace()
                 return@withContext null
             } finally {
-                // ZipFileの参照を解放
+                // ZipFileの参照を解放（suspend対応）
                 if (zipFile != null) {
                     zipFileManager.releaseZipFile(filePath)
+                    println("DEBUG: Released ZipFile reference for ${imageEntry.fileName}")
                 }
             }
         }
 
     /**
-     * 現在のZipファイルを閉じる（ZipFileManager使用版）
+     * 現在のZipファイルを閉じる（完全同期化版）
      */
-    fun closeCurrentZipFile() {
+    suspend fun closeCurrentZipFile() {
         try {
             // 管理されているすべてのZipFileを閉じる
             zipFileManager.closeAllZipFiles()
             println("DEBUG: All ZipFiles closed via ZipFileManager")
-        } catch (e: Exception) {
-            println("DEBUG: Error closing ZipFiles: ${e.message}")
+        } catch (_: Exception) {
+            println("DEBUG: Error closing ZipFiles")
+        }
+    }
+    
+    /**
+     * 現在のZipファイルを閉じる（非同期版・互換性用）
+     */
+    fun closeCurrentZipFileAsync() {
+        preloadScope.launch {
+            closeCurrentZipFile()
         }
     }
 
     /**
-     * プリロードをトリガー（制御強化版）
+     * プリロードをトリガー（Phase 2: エラーハンドリング強化版）
      */
     private fun triggerPreload(currentIndex: Int) {
-        if (currentZipEntries.isEmpty()) return
-
+        if (!enablePreload) {
+            println("DEBUG: Preload disabled")
+            return
+        }
+        
         preloadScope.launch {
-            // 現在のメモリ使用状況に基づいてプリロード範囲を動的調整
-            val memoryUsagePercent = (currentMemoryUsage.get().toFloat() / maxMemoryUsage) * 100
-            val dynamicPreloadRange = when {
-                memoryUsagePercent > 70 -> minPreloadRange // メモリ使用量が多い場合は最小範囲
-                memoryUsagePercent < 30 -> maxPreloadRange // メモリに余裕がある場合は最大範囲
-                else -> preloadRange // 通常範囲
-            }
-
-            val startIndex = max(0, currentIndex - dynamicPreloadRange)
-            val endIndex = min(currentZipEntries.size - 1, currentIndex + dynamicPreloadRange)
-
-            println("DEBUG: Starting controlled preload for range $startIndex to $endIndex (current: $currentIndex)")
-            println("DEBUG: Dynamic preload range: $dynamicPreloadRange (memory usage: ${memoryUsagePercent.toInt()}%)")
-
-            // 優先度付きでプリロード要求を送信
-            val requests = mutableListOf<PreloadRequest>()
-
-            for (i in startIndex..endIndex) {
-                if (i == currentIndex) continue // 現在のページはスキップ
-
-                val entry = currentZipEntries[i]
-
-                // 既にキャッシュされているか、アクティブな処理があるかチェック
-                if (imageDataCache.containsKey(entry.id) ||
-                    activePreloadJobs.values.any { !it.isCancelled }
-                ) {
-                    continue
+            try {
+                // 現在の状態を同期化して取得
+                val currentEntries = stateMutex.withLock { 
+                    currentZipEntries.toList() // 不変のコピーを作成
+                }
+                
+                if (currentEntries.isEmpty()) {
+                    println("DEBUG: No entries available for preload")
+                    return@launch
                 }
 
-                // 距離に基づく優先度設定（近いページほど高優先度）
-                val distance = kotlin.math.abs(i - currentIndex)
-                val priority = dynamicPreloadRange - distance + 1
+                // 現在のメモリ使用状況に基づいてプリロード範囲を動的調整
+                val memoryUsagePercent = (currentMemoryUsage.get().toFloat() / maxMemoryUsage) * 100
+                val dynamicPreloadRange = when {
+                    memoryUsagePercent > 70 -> minPreloadRange // メモリ使用量が多い場合は最小範囲
+                    memoryUsagePercent < 30 -> maxPreloadRange // メモリに余裕がある場合は最大範囲
+                    else -> preloadRange // 通常範囲
+                }
 
-                requests.add(PreloadRequest(entry, priority))
-            }
+                val startIndex = max(0, currentIndex - dynamicPreloadRange)
+                val endIndex = min(currentEntries.size - 1, currentIndex + dynamicPreloadRange)
 
-            // 優先度順にソートして送信
-            requests.sortedByDescending { it.priority }.forEach { request ->
-                try {
-                    // チャンネルが満杯の場合は低優先度の要求をスキップ
-                    if (preloadChannel.trySend(request).isSuccess) {
-                        println("DEBUG: Queued preload: ${request.entry.fileName} (priority: ${request.priority})")
-                        delay(100) // プリロード要求間に間隔を設ける
-                    } else {
-                        println("DEBUG: Preload queue full, skipping: ${request.entry.fileName}")
+                println("DEBUG: Phase 2 Preload - Range $startIndex to $endIndex (current: $currentIndex)")
+                println("DEBUG: Dynamic preload range: $dynamicPreloadRange (memory usage: ${memoryUsagePercent.toInt()}%)")
+                println("DEBUG: Active cache size: ${imageDataCache.size}/$maxCacheSize")
+
+                // 優先度付きでプリロード要求を送信
+                val requests = mutableListOf<PreloadRequest>()
+
+                for (i in startIndex..endIndex) {
+                    if (i == currentIndex) continue // 現在のページはスキップ
+
+                    val entry = currentEntries[i]
+
+                    // 既にキャッシュされているか、アクティブな処理があるかチェック
+                    if (imageDataCache.containsKey(entry.id)) {
+                        println("DEBUG: Skipping preload (cached): ${entry.fileName}")
+                        continue
                     }
-                } catch (_: Exception) {
-                    println("DEBUG: Failed to queue preload")
+                    
+                    if (activePreloadJobs.values.any { !it.isCancelled }) {
+                        println("DEBUG: Skipping preload (active job exists): ${entry.fileName}")
+                        continue
+                    }
+
+                    // 距離に基づく優先度設定（近いページほど高優先度）
+                    val distance = kotlin.math.abs(i - currentIndex)
+                    val priority = dynamicPreloadRange - distance + 1
+
+                    requests.add(PreloadRequest(entry, priority))
                 }
+
+                // 優先度順にソートして送信
+                requests.sortedByDescending { it.priority }.forEach { request ->
+                    try {
+                        // チャンネルが満杯の場合は低優先度の要求をスキップ
+                        if (preloadChannel.trySend(request).isSuccess) {
+                            println("DEBUG: Phase 2 Queued preload: ${request.entry.fileName} (priority: ${request.priority})")
+                            delay(200) // プリロード要求間に間隔を設ける（100msから延長）
+                        } else {
+                            println("DEBUG: Phase 2 Preload queue full, skipping: ${request.entry.fileName}")
+                        }
+                    } catch (e: Exception) {
+                        println("ERROR: Phase 2 Failed to queue preload: ${e.message}")
+                    }
+                }
+                
+                println("DEBUG: Phase 2 Preload trigger completed - ${requests.size} requests processed")
+                
+            } catch (e: Exception) {
+                println("ERROR: Phase 2 Exception in triggerPreload: ${e.message}")
+                e.printStackTrace()
             }
         }
     }
 
     /**
-     * 古いキャッシュのクリーンアップ（メモリ管理強化版）
+     * 古いキャッシュのクリーンアップ（完全同期化版）
      */
-    private fun cleanupOldCache() {
+    private suspend fun cleanupOldCache() {
+        cacheMutex.withLock {
+            cleanupOldCacheInternal()
+        }
+    }
+    
+    /**
+     * 古いキャッシュのクリーンアップ（内部実装・既にロック済みを前提）
+     */
+    private fun cleanupOldCacheInternal() {
         if (imageDataCache.isEmpty()) return
 
         val beforeSize = imageDataCache.size
         val beforeMemory = currentMemoryUsage.get()
 
+        // 現在の状態を安全に取得
+        val currentEntries = currentZipEntries.toList()
+        
         // 現在表示中の範囲を計算
-        val currentIndex = currentZipEntries.indexOfFirst {
+        val currentIndex = currentEntries.indexOfFirst {
             imageDataCache.containsKey(it.id)
         }.takeIf { it != -1 } ?: 0
 
         // 保護する範囲（現在のプリロード範囲）
         val protectedRange = max(0, currentIndex - preloadRange)..min(
-            currentZipEntries.size - 1,
+            currentEntries.size - 1,
             currentIndex + preloadRange
         )
 
@@ -751,7 +979,7 @@ class DirectZipImageHandler(private val context: Context) {
         val keysToRemove = mutableListOf<Pair<String, Long>>()
 
         imageDataCache.forEach { (key, data) ->
-            val entryIndex = currentZipEntries.indexOfFirst { it.id == key }
+            val entryIndex = currentEntries.indexOfFirst { it.id == key }
 
             // 保護範囲外のキャッシュを削除対象にする
             if (entryIndex == -1 || entryIndex !in protectedRange) {
@@ -797,29 +1025,31 @@ class DirectZipImageHandler(private val context: Context) {
     }
 
     /**
-     * パフォーマンスメトリクスの更新（メモリ監視対応版）
+     * パフォーマンスメトリクスの更新（完全同期化版）
      */
     private fun updateMetrics(loadTime: Long, isHit: Boolean = false, isPreload: Boolean = false) {
         // メトリクス更新をバックグラウンドで実行（メインスレッドの負荷軽減）
         preloadScope.launch {
-            try {
-                val currentMetrics = _performanceMetrics.value
-                val newTotalRequests = currentMetrics.totalRequests + 1
-                val newHits =
-                    if (isHit) newTotalRequests * currentMetrics.cacheHitRate + 1 else newTotalRequests * currentMetrics.cacheHitRate
-                val newPreloadedImages =
-                    if (isPreload) currentMetrics.preloadedImages + 1 else currentMetrics.preloadedImages
+            metricsMutex.withLock {
+                try {
+                    val currentMetrics = _performanceMetrics.value
+                    val newTotalRequests = currentMetrics.totalRequests + 1
+                    val newHits =
+                        if (isHit) newTotalRequests * currentMetrics.cacheHitRate + 1 else newTotalRequests * currentMetrics.cacheHitRate
+                    val newPreloadedImages =
+                        if (isPreload) currentMetrics.preloadedImages + 1 else currentMetrics.preloadedImages
 
-                _performanceMetrics.value = currentMetrics.copy(
-                    cacheHitRate = if (newTotalRequests > 0) newHits / newTotalRequests else 0f,
-                    averageLoadTime = (currentMetrics.averageLoadTime + loadTime) / 2,
-                    preloadedImages = newPreloadedImages,
-                    totalRequests = newTotalRequests,
-                    memoryUsageBytes = currentMemoryUsage.get(),
-                    activePreloads = activePreloadJobs.size
-                )
-            } catch (e: Exception) {
-                // メトリクス更新エラーは無視（パフォーマンス優先）
+                    _performanceMetrics.value = currentMetrics.copy(
+                        cacheHitRate = if (newTotalRequests > 0) newHits / newTotalRequests else 0f,
+                        averageLoadTime = (currentMetrics.averageLoadTime + loadTime) / 2,
+                        preloadedImages = newPreloadedImages,
+                        totalRequests = newTotalRequests,
+                        memoryUsageBytes = currentMemoryUsage.get(),
+                        activePreloads = activePreloadJobs.size
+                    )
+                } catch (_: Exception) {
+                    // メトリクス更新エラーは無視（パフォーマンス優先）
+                }
             }
         }
     }
@@ -833,16 +1063,24 @@ class DirectZipImageHandler(private val context: Context) {
     }
 
     /**
-     * メモリキャッシュをクリア（プリロード制御対応版）
+     * メモリキャッシュをクリア（完全同期化版）
      */
-    fun clearMemoryCache() {
+    suspend fun clearMemoryCache() {
         // アクティブなプリロードをキャンセル
         cancelAllActivePreloads()
 
-        // キャッシュをクリア
-        imageDataCache.clear()
-        zipEntryCache.clear()
-        currentMemoryUsage.set(0)
+        // キャッシュを同期化してクリア
+        cacheMutex.withLock {
+            imageDataCache.clear()
+            currentMemoryUsage.set(0)
+        }
+        
+        // エントリキャッシュと状態をクリア
+        stateMutex.withLock {
+            zipEntryCache.clear()
+            currentZipUri = null
+            currentZipEntries = emptyList()
+        }
 
         println("DEBUG: Memory cache cleared")
         println("DEBUG: Active ZipFiles: ${zipFileManager.getActiveZipFileCount()}")
@@ -850,11 +1088,20 @@ class DirectZipImageHandler(private val context: Context) {
 
         System.gc()
     }
+    
+    /**
+     * メモリキャッシュをクリア（非同期版・互換性用）
+     */
+    fun clearMemoryCacheAsync() {
+        preloadScope.launch {
+            clearMemoryCache()
+        }
+    }
 
     /**
-     * リソースのクリーンアップ（プリロード制御対応版）
+     * リソースのクリーンアップ（完全同期化版）
      */
-    fun cleanup() {
+    suspend fun cleanup() {
         // アクティブなプリロードを全てキャンセル
         cancelAllActivePreloads()
 
@@ -873,6 +1120,15 @@ class DirectZipImageHandler(private val context: Context) {
         println("DEBUG: DirectZipImageHandler cleanup completed")
         println("DEBUG: Final memory usage: ${currentMemoryUsage.get() / 1024 / 1024}MB")
     }
+    
+    /**
+     * リソースのクリーンアップ（非同期版・互換性用）
+     */
+    fun cleanupAsync() {
+        preloadScope.launch {
+            cleanup()
+        }
+    }
 
     // 既存メソッドのデリゲート
     fun getUnifiedDataManager(): UnifiedReadingDataManager = unifiedDataManager
@@ -888,7 +1144,7 @@ class DirectZipImageHandler(private val context: Context) {
 
                 else -> zipUri.toString()
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             zipUri.toString()
         }
     }
@@ -898,23 +1154,39 @@ class DirectZipImageHandler(private val context: Context) {
     }
 
     fun onZipFileDeleted(zipUri: Uri, zipFile: File? = null) {
-        unifiedDataManager.onFileDeleted(zipUri, zipFile)
-        val fileId = generateFileIdentifier(zipUri, zipFile)
-        imageDataCache.keys.removeAll { it.startsWith(fileId) }
-        zipEntryCache.remove(fileId)
-
-        // 削除されたファイルのZipFileを強制的に閉じる
-        val filePath = zipFile?.absolutePath ?: run {
-            if (zipUri.scheme == "file") {
-                zipUri.path
-            } else {
-                null
+        preloadScope.launch {
+            unifiedDataManager.onFileDeleted(zipUri, zipFile)
+            val fileId = generateFileIdentifier(zipUri, zipFile)
+            
+            // キャッシュから関連データを同期化して削除
+            cacheMutex.withLock {
+                val keysToRemove = imageDataCache.keys.filter { it.startsWith(fileId) }
+                keysToRemove.forEach { key ->
+                    val data = imageDataCache.remove(key)
+                    if (data != null) {
+                        currentMemoryUsage.addAndGet(-data.size.toLong())
+                    }
+                }
             }
-        }
+            
+            // エントリキャッシュからも削除
+            stateMutex.withLock {
+                zipEntryCache.remove(fileId)
+            }
 
-        if (filePath != null) {
-            zipFileManager.forceCloseZipFile(filePath)
-            println("DEBUG: Force closed ZipFile for deleted file: ${zipFile?.name ?: zipUri}")
+            // 削除されたファイルのZipFileを強制的に閉じる
+            val filePath = zipFile?.absolutePath ?: run {
+                if (zipUri.scheme == "file") {
+                    zipUri.path
+                } else {
+                    null
+                }
+            }
+
+            if (filePath != null) {
+                zipFileManager.forceCloseZipFile(filePath)
+                println("DEBUG: Force closed ZipFile for deleted file: ${zipFile?.name ?: zipUri}")
+            }
         }
     }
 
@@ -940,10 +1212,10 @@ class DirectZipImageHandler(private val context: Context) {
     }
 
     /**
-     * デバッグ用: ZipFileManagerの状態を表示
+     * デバッグ用: ZipFileManagerの状態を表示（同期化版）
      */
     @Suppress("unused")
-    fun getZipFileManagerStatus(): String {
+    suspend fun getZipFileManagerStatus(): String {
         return "Active ZipFiles: ${zipFileManager.getActiveZipFileCount()}"
     }
 
