@@ -207,18 +207,33 @@ class LocalFileRepository(private val context: Context) {
     }
 
     /**
-     * フォルダ内のZIPファイルの読書状況をクリア
+     * フォルダ内のZIPファイルの読書状況をクリア（安全版）
      */
     private suspend fun clearReadingStatusForFolder(folder: File) {
         try {
+            println("DEBUG: Repository - Clearing reading status for folder: ${folder.absolutePath}")
+            
+            // フォルダー内のZIPファイルを再帰的に検索
+            val zipFiles = mutableListOf<File>()
             folder.walk()
                 .filter { it.isFile && it.extension.lowercase() == "zip" }
                 .forEach { zipFile ->
-                    unifiedDataManager.clearReadingData(zipFile.absolutePath)
-                    println("DEBUG: Repository cleared reading data for folder file: ${zipFile.name}")
+                    zipFiles.add(zipFile)
                 }
+            
+            println("DEBUG: Repository - Found ${zipFiles.size} ZIP files in folder")
+            
+            // 各ZIPファイルの読書データを個別にクリア
+            zipFiles.forEach { zipFile ->
+                unifiedDataManager.clearReadingData(zipFile.absolutePath)
+                println("DEBUG: Repository - Cleared reading data for: ${zipFile.name}")
+            }
+            
+            println("DEBUG: Repository - Folder reading status clear completed")
+            
         } catch (e: Exception) {
-            println("DEBUG: Failed to clear reading status for folder: ${e.message}")
+            println("ERROR: Repository - Failed to clear reading status for folder: ${e.message}")
+            e.printStackTrace()
         }
     }
 

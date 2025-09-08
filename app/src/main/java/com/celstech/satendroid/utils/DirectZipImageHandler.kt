@@ -1153,6 +1153,55 @@ class DirectZipImageHandler(private val context: Context) {
         return unifiedDataManager.getSavedPosition(zipUri, zipFile)
     }
 
+    /**
+     * 指定フォルダーのファイル削除処理（安全版）
+     */
+    fun onFolderDeleted(folderPath: String) {
+        preloadScope.launch {
+            try {
+                println("DEBUG: DirectZipHandler - Folder deleted: $folderPath")
+                
+                // UnifiedReadingDataManagerで読書データをクリア
+                unifiedDataManager.clearReadingDataForFolder(folderPath)
+                
+                // メモリキャッシュからも関連データを削除
+                cacheMutex.withLock {
+                    val keysToRemove = imageDataCache.keys.filter { key ->
+                        key.contains(folderPath) || folderPath.contains(key.substringBeforeLast('_'))
+                    }
+                    keysToRemove.forEach { key ->
+                        val data = imageDataCache.remove(key)
+                        if (data != null) {
+                            currentMemoryUsage.addAndGet(-data.size.toLong())
+                        }
+                    }
+                    
+                    if (keysToRemove.isNotEmpty()) {
+                        println("DEBUG: DirectZipHandler - Cleared ${keysToRemove.size} cached images for folder")
+                    }
+                }
+                
+                // エントリキャッシュからも削除
+                stateMutex.withLock {
+                    val keysToRemove = zipEntryCache.keys.filter { key ->
+                        key.contains(folderPath) || folderPath.contains(key.substringBeforeLast('/'))
+                    }
+                    keysToRemove.forEach { key ->
+                        zipEntryCache.remove(key)
+                    }
+                    
+                    if (keysToRemove.isNotEmpty()) {
+                        println("DEBUG: DirectZipHandler - Cleared ${keysToRemove.size} entry caches for folder")
+                    }
+                }
+                
+            } catch (e: Exception) {
+                println("ERROR: DirectZipHandler - Failed to handle folder deletion: ${e.message}")
+                e.printStackTrace()
+            }
+        }
+    }
+
     fun onZipFileDeleted(zipUri: Uri, zipFile: File? = null) {
         preloadScope.launch {
             unifiedDataManager.onFileDeleted(zipUri, zipFile)

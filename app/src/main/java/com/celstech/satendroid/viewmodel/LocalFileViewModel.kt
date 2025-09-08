@@ -235,11 +235,23 @@ class LocalFileViewModel(
     }
 
     private fun clearCacheForFolder(folderPath: String) {
-        // フォルダ内のZIPファイルのキャッシュをクリアする処理
-        // 実際の実装では、フォルダ内のZIPファイルを再帰的に検索して
-        // 各ファイルのキャッシュをクリアする必要があります
-        // ここでは簡略化して、すべてのキャッシュをクリア
-        directZipHandler.getUnifiedDataManager().clearCache()
+        // フォルダー内のZIPファイルのキャッシュのみをクリア（全データ削除を防止）
+        viewModelScope.launch {
+            try {
+                println("DEBUG: Clearing cache for folder: $folderPath")
+                
+                // UnifiedReadingDataManagerのフォルダー内ファイルクリア機能を使用
+                directZipHandler.getUnifiedDataManager().clearReadingDataForFolder(folderPath)
+                
+                // DirectZipImageHandlerでもフォルダー削除処理を実行
+                directZipHandler.onFolderDeleted(folderPath)
+                
+                println("DEBUG: Cache cleared for folder: $folderPath")
+            } catch (e: Exception) {
+                println("ERROR: Failed to clear cache for folder $folderPath: ${e.message}")
+                e.printStackTrace()
+            }
+        }
     }
 
     // Dialog state management

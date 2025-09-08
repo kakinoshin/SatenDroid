@@ -583,6 +583,83 @@ class UnifiedReadingDataManager(private val context: Context) {
     }
     
     /**
+     * 特定フォルダー内のファイルの読書データをクリア（安全版）
+     */
+    suspend fun clearReadingDataForFolder(folderPath: String) = withContext(Dispatchers.IO) {
+        try {
+            println("DEBUG: Starting to clear reading data for folder: $folderPath")
+            
+            // 正規化されたフォルダーパス
+            val normalizedFolderPath = normalizeFilePath(folderPath)
+            
+            // フォルダーパスに一致するすべてのキーを検索
+            val allKeys = prefs.all.keys
+            val keysToRemove = mutableListOf<String>()
+            var matchedFiles = 0
+            
+            // パターン1: フォルダーパスで始まるファイルパス
+            // パターン2: フォルダー名が含まれるファイルパス
+            allKeys.forEach { key ->
+                // プレフィックスを除去してファイルパスを取得
+                val filePath = when {
+                    key.startsWith(STATUS_PREFIX) -> key.removePrefix(STATUS_PREFIX)
+                    key.startsWith(POSITION_PREFIX) -> key.removePrefix(POSITION_PREFIX)
+                    key.startsWith(LAST_UPDATED_PREFIX) -> key.removePrefix(LAST_UPDATED_PREFIX)
+                    key.startsWith(TOTAL_IMAGES_PREFIX) -> key.removePrefix(TOTAL_IMAGES_PREFIX)
+                    key.startsWith(FILE_HASH_PREFIX) -> key.removePrefix(FILE_HASH_PREFIX)
+                    else -> null
+                }
+                
+                if (filePath != null) {
+                    // フォルダーパスに一致するかチェック
+                    val isInFolder = filePath.contains(normalizedFolderPath) || 
+                                   filePath.contains(folderPath) ||
+                                   normalizedFolderPath.contains(filePath.substringBeforeLast('/'))
+                    
+                    if (isInFolder) {
+                        keysToRemove.add(key)
+                        if (key.startsWith(STATUS_PREFIX)) {
+                            matchedFiles++
+                        }
+                    }
+                }
+            }
+            
+            if (keysToRemove.isNotEmpty()) {
+                val editor = prefs.edit()
+                keysToRemove.forEach { key ->
+                    editor.remove(key)
+                    println("DEBUG: Removing key: $key")
+                }
+                editor.apply()
+                
+                println("DEBUG: Cleared reading data for folder '$folderPath':")
+                println("DEBUG:   Matched files: $matchedFiles")
+                println("DEBUG:   Total keys removed: ${keysToRemove.size}")
+            } else {
+                println("DEBUG: No reading data found for folder: $folderPath")
+            }
+            
+            // バッチ処理からも該当するファイルを削除
+            val pendingKeysToRemove = pendingPositions.keys.filter { pendingPath ->
+                val normalizedPendingPath = normalizeFilePath(pendingPath)
+                normalizedPendingPath.contains(normalizedFolderPath) || 
+                normalizedPendingPath.contains(folderPath) ||
+                normalizedFolderPath.contains(normalizedPendingPath.substringBeforeLast('/'))
+            }
+            
+            pendingKeysToRemove.forEach { key ->
+                pendingPositions.remove(key)
+                println("DEBUG: Removed pending position for: $key")
+            }
+            
+        } catch (e: Exception) {
+            println("ERROR: clearReadingDataForFolder failed for $folderPath: ${e.message}")
+            e.printStackTrace()
+        }
+    }
+    
+    /**
      * ファイルの読書データをクリア
      */
     suspend fun clearReadingData(filePath: String) = withContext(Dispatchers.IO) {
@@ -624,7 +701,9 @@ class UnifiedReadingDataManager(private val context: Context) {
     }
     
     /**
-     * 全ての読書データをクリア
+     * 全ての読書データをクリア（危険：全データ削除）
+     * 注意：このメソッドは設定画面での明示的なクリア操作でのみ使用すること
+     * フォルダー削除などでは絶対に使用しない
      */
     suspend fun clearAllReadingData() = withContext(Dispatchers.IO) {
         // バッチ処理をクリア
@@ -632,16 +711,19 @@ class UnifiedReadingDataManager(private val context: Context) {
         
         prefs.edit { clear() }
         
-        println("DEBUG: Cleared all reading data")
+        println("WARNING: All reading data cleared - this should only be used for explicit user actions")
     }
     
     /**
-     * キャッシュデータをクリア（ImageCacheManager互換）
+     * キャッシュデータをクリア（危険：全データ削除）
+     * 注意：このメソッドは設定画面での明示的なクリア操作でのみ使用すること
+     * フォルダー削除などでは絶対に使用しない
      */
     fun clearCache() {
         batchScope.launch {
             clearAllReadingData()
         }
+        println("WARNING: Cache cleared - all reading data deleted")
     }
     
     /**
@@ -653,6 +735,17 @@ class UnifiedReadingDataManager(private val context: Context) {
         val swipeStatus = if (_reverseSwipeDirection.value) "逆転" else "標準"
         val pendingCount = pendingPositions.size
         return "キャッシュ機能: $cacheStatus\nファイル削除時: $deleteStatus\nスワイプ方向: $swipeStatus\n未保存位置: $pendingCount"
+    }
+    
+    /**
+     * 設定画面専用：全ての読書データを明示的にクリア
+     * 注意：この操作は元に戻せません
+     */
+    fun clearAllReadingDataExplicitly() {
+        batchScope.launch {
+            clearAllReadingData()
+        }
+        println("WARNING: All reading data explicitly cleared by user from settings")
     }
     
     /**
