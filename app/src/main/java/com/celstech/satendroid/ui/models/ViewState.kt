@@ -1,5 +1,10 @@
 package com.celstech.satendroid.ui.models
 
+import android.net.Uri
+import com.celstech.satendroid.navigation.FileNavigationManager
+import com.celstech.satendroid.utils.ZipImageEntry
+import java.io.File
+
 /**
  * アプリケーションの主要画面状態を管理するsealedクラス
  */
@@ -8,4 +13,21 @@ sealed class ViewState {
     object ImageViewer : ViewState()
     object DropboxBrowser : ViewState()
     object Settings : ViewState()
+}
+
+/**
+ * 画像ビューアの状態を管理するデータクラス
+ */
+data class ImageViewerState(
+    val imageEntries: List<ZipImageEntry>,
+    val currentZipUri: Uri,
+    val currentZipFile: File?,
+    val fileNavigationInfo: FileNavigationManager.NavigationInfo?,
+    val initialPage: Int
+) {
+    /**
+     * ファイルの一意識別子
+     */
+    val fileId: String
+        get() = currentZipFile?.absolutePath ?: currentZipUri.toString()
 }

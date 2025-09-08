@@ -34,9 +34,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.celstech.satendroid.LocalDropboxAuthManager
 import com.celstech.satendroid.navigation.FileNavigationManager
-import com.celstech.satendroid.ui.models.ImageViewerState
 import com.celstech.satendroid.ui.models.ViewState
+import com.celstech.satendroid.ui.models.ImageViewerState
 import com.celstech.satendroid.utils.DirectZipImageHandler
+import com.celstech.satendroid.utils.SimpleReadingDataManager
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
@@ -66,7 +67,7 @@ fun MainScreen() {
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
     // 画像ビューア用の状態
-    var currentImageViewerState by remember { mutableStateOf<ImageViewerState?>(null) }
+    var currentImageViewerState: ImageViewerState? by remember { mutableStateOf(null) }
 
     // 読書状態更新のための状態
     var lastReadingProgress by remember { mutableStateOf<Pair<File, Int>?>(null) }
@@ -78,6 +79,13 @@ fun MainScreen() {
     val directZipHandler = remember {
         DirectZipImageHandler(context).also {
             println("DEBUG: DirectZipImageHandler created")
+        }
+    }
+
+    // シンプル読書データマネージャー
+    val readingDataManager = remember {
+        SimpleReadingDataManager(context).also {
+            println("DEBUG: SimpleReadingDataManager created")
         }
     }
 
@@ -129,9 +137,9 @@ fun MainScreen() {
                     println("DEBUG: Getting initial page for ${file?.name ?: uri}")
                     println("DEBUG: Saved position: $savedPosition")
                     println("DEBUG: Total images: ${imageEntryList.size}")
-                    
+
                     val page = savedPosition.coerceIn(0, imageEntryList.size - 1)
-                    
+
                     println("DEBUG: Initial page set to: $page")
                     page
                 }
@@ -152,7 +160,11 @@ fun MainScreen() {
 
                 // 総画像数を保存
                 val filePath = directZipHandler.generateFileIdentifier(uri, file)
-                directZipHandler.getUnifiedDataManager().saveTotalImages(filePath, imageEntryList.size)
+                readingDataManager.saveReadingData(
+                    filePath = filePath,
+                    currentPage = 0,
+                    totalPages = imageEntryList.size
+                )
                 println("DEBUG: Saved total images count: ${imageEntryList.size}")
 
                 isLoading = false
@@ -179,10 +191,14 @@ fun MainScreen() {
                 currentImageViewerState?.let { state ->
                     if (pagerState.currentPage >= 0) {
                         // 即座に保存（バッチ処理ではなく）
-                        directZipHandler.getUnifiedDataManager().saveCurrentPositionImmediately(
+                        val filePath = directZipHandler.generateFileIdentifier(
                             state.currentZipUri,
-                            pagerState.currentPage,
                             state.currentZipFile
+                        )
+                        readingDataManager.saveReadingData(
+                            filePath = filePath,
+                            currentPage = pagerState.currentPage,
+                            totalPages = state.imageEntries.size
                         )
                         println("DEBUG: Immediately saved position ${pagerState.currentPage} for ${state.currentZipFile?.name}")
                     }
@@ -221,11 +237,15 @@ fun MainScreen() {
                 !isLoading
             ) {
                 try {
-                    // 通常の位置保存（バッチ処理）
-                    directZipHandler.saveCurrentPosition(
+                    // 通常の位置保存（即座保存）
+                    val filePath = directZipHandler.generateFileIdentifier(
                         state.currentZipUri,
-                        currentPage,
                         state.currentZipFile
+                    )
+                    readingDataManager.saveReadingData(
+                        filePath = filePath,
+                        currentPage = currentPage,
+                        totalPages = state.imageEntries.size
                     )
                     println("DEBUG: Auto-saved position $currentPage")
                 } catch (e: Exception) {
@@ -271,19 +291,20 @@ fun MainScreen() {
                     // 現在の位置を最終保存
                     currentImageViewerState?.let { state ->
                         if (pagerState.currentPage >= 0) {
-                            directZipHandler.getUnifiedDataManager().saveCurrentPositionImmediately(
+                            val filePath = directZipHandler.generateFileIdentifier(
                                 state.currentZipUri,
-                                pagerState.currentPage,
                                 state.currentZipFile
+                            )
+                            readingDataManager.saveReadingData(
+                                filePath = filePath,
+                                currentPage = pagerState.currentPage,
+                                totalPages = state.imageEntries.size
                             )
                             println("DEBUG: Final position saved: ${pagerState.currentPage}")
                         }
                     }
-                    
-                    // 未保存データをフラッシュ
-                    directZipHandler.getUnifiedDataManager().flushPendingPositions()
-                    
-                    // リソースクリーンアップ
+
+                    // リソースクリーンアップ（フラッシュ処理は不要）
                     directZipHandler.clearMemoryCache()
                     directZipHandler.closeCurrentZipFile()
                     directZipHandler.cleanup()
@@ -420,18 +441,19 @@ fun MainScreen() {
                                 currentImageViewerState?.let { currentState ->
                                     if (pagerState.currentPage >= 0) {
                                         // 即座に保存
-                                        directZipHandler.getUnifiedDataManager().saveCurrentPositionImmediately(
-                                            currentState.currentZipUri,
-                                            pagerState.currentPage,
-                                            currentState.currentZipFile
-                                        )
+                                        directZipHandler.getUnifiedDataManager()
+                                            .saveCurrentPositionImmediately(
+                                                currentState.currentZipUri,
+                                                pagerState.currentPage,
+                                                currentState.currentZipFile
+                                            )
                                         println("DEBUG: Saved position ${pagerState.currentPage} before returning to file list")
                                     }
                                 }
                             } catch (e: Exception) {
                                 println("ERROR: Failed to save position on back: ${e.message}")
                             }
-                            
+
                             // ファイルリストに戻る
                             currentView = ViewState.LocalFileList
                         }
@@ -441,10 +463,14 @@ fun MainScreen() {
                             // 現在の位置を即座に保存
                             state.currentZipFile?.let { currentFile ->
                                 try {
-                                    directZipHandler.getUnifiedDataManager().saveCurrentPositionImmediately(
+                                    val filePath = directZipHandler.generateFileIdentifier(
                                         state.currentZipUri,
-                                        pagerState.currentPage,
                                         state.currentZipFile
+                                    )
+                                    readingDataManager.saveReadingData(
+                                        filePath = filePath,
+                                        currentPage = pagerState.currentPage,
+                                        totalPages = state.imageEntries.size
                                     )
                                     lastReadingProgress = Pair(currentFile, pagerState.currentPage)
                                     println("DEBUG: Saved position before navigating to previous file")
@@ -463,10 +489,14 @@ fun MainScreen() {
                             // 現在の位置を即座に保存
                             state.currentZipFile?.let { currentFile ->
                                 try {
-                                    directZipHandler.getUnifiedDataManager().saveCurrentPositionImmediately(
+                                    val filePath = directZipHandler.generateFileIdentifier(
                                         state.currentZipUri,
-                                        pagerState.currentPage,
                                         state.currentZipFile
+                                    )
+                                    readingDataManager.saveReadingData(
+                                        filePath = filePath,
+                                        currentPage = pagerState.currentPage,
+                                        totalPages = state.imageEntries.size
                                     )
                                     fileCompletionUpdate = currentFile
                                     println("DEBUG: Saved position before navigating to next file")
@@ -481,22 +511,25 @@ fun MainScreen() {
                         }
                     },
                     fileNavigationInfo = state.fileNavigationInfo,
-                    cacheManager = directZipHandler.getUnifiedDataManager(),
+                    readingDataManager = readingDataManager,
                     directZipHandler = directZipHandler,
                     onPageChanged = { currentPage, totalPages, zipFile ->
                         lastReadingProgress = Pair(zipFile, currentPage)
                         if (currentPage >= totalPages - 1) {
                             fileCompletionUpdate = zipFile
                         }
-                        
-                        // 総画像数付きで位置を保存（バッチ処理）
+
+                        // 総画像数付きで位置を保存（即座保存）
                         try {
-                            val filePath = directZipHandler.generateFileIdentifier(Uri.fromFile(zipFile), zipFile)
+                            val filePath = directZipHandler.generateFileIdentifier(
+                                Uri.fromFile(zipFile),
+                                zipFile
+                            )
                             coroutineScope.launch {
-                                directZipHandler.getUnifiedDataManager().saveReadingPosition(
-                                    filePath,
-                                    currentPage,
-                                    totalPages
+                                readingDataManager.saveReadingData(
+                                    filePath = filePath,
+                                    currentPage = currentPage,
+                                    totalPages = totalPages
                                 )
                             }
                         } catch (e: Exception) {
@@ -521,7 +554,7 @@ fun MainScreen() {
 
         is ViewState.Settings -> {
             SettingsScreenNew(
-                cacheManager = directZipHandler.getUnifiedDataManager(),
+                readingDataManager = readingDataManager,
                 directZipHandler = directZipHandler,
                 onBackPressed = {
                     currentView = ViewState.LocalFileList

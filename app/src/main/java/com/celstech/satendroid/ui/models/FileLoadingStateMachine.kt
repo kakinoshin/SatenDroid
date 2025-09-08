@@ -1,179 +1,148 @@
-package com.celstech.satendroid.ui.models
+package com.celstech.satendroid.ui.screens
 
-import android.net.Uri
-import com.celstech.satendroid.utils.ZipImageEntry
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import java.io.File
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.celstech.satendroid.utils.SimpleReadingDataManager
+import com.celstech.satendroid.ui.components.InfoDialog
 
-/**
- * ファイル読み込み用のState Machine
- * delayによるタイミング調整を排除し、適切な状態遷移で制御
- */
-class FileLoadingStateMachine {
-    
-    data class PendingRequest(val uri: Uri, val file: File?, val isNextFile: Boolean)
-    
-    sealed class LoadingState {
-        object Idle : LoadingState()
-        object StoppingUI : LoadingState()
-        object CleaningResources : LoadingState()
-        object PreparingFile : LoadingState()
-        data class Ready(val state: ImageViewerState) : LoadingState()
-        data class Error(val message: String, val throwable: Throwable? = null) : LoadingState()
-    }
-    
-    sealed class LoadingAction {
-        data class StartLoading(val uri: Uri, val file: File?, val isNextFile: Boolean = false) : LoadingAction()
-        object UIStoppedComplete : LoadingAction()
-        object ResourcesClearedComplete : LoadingAction()
-        data class FilePreparationComplete(val state: ImageViewerState?) : LoadingAction()
-        data class FilePreparationFailed(val error: Throwable) : LoadingAction()
-        object Reset : LoadingAction()
-    }
-    
-    private val _currentState = MutableStateFlow<LoadingState>(LoadingState.Idle)
-    val currentState: StateFlow<LoadingState> = _currentState.asStateFlow()
-    
-    private val _pendingRequest = MutableStateFlow<PendingRequest?>(null)
-    val pendingRequest: StateFlow<PendingRequest?> = _pendingRequest.asStateFlow()
-    
-    /**
-     * アクションを処理して状態遷移を実行
-     */
-    fun processAction(action: LoadingAction): Boolean {
-        val currentState = _currentState.value
-        
-        return when (action) {
-            is LoadingAction.StartLoading -> {
-                when (currentState) {
-                    is LoadingState.Idle -> {
-                        _pendingRequest.value = PendingRequest(action.uri, action.file, action.isNextFile)
-                        _currentState.value = LoadingState.StoppingUI
-                        true
-                    }
-                    else -> {
-                        // 他の処理中は新しいリクエストを拒否
-                        false
-                    }
-                }
-            }
-            
-            is LoadingAction.UIStoppedComplete -> {
-                when (currentState) {
-                    is LoadingState.StoppingUI -> {
-                        _currentState.value = LoadingState.CleaningResources
-                        true
-                    }
-                    else -> false
-                }
-            }
-            
-            is LoadingAction.ResourcesClearedComplete -> {
-                when (currentState) {
-                    is LoadingState.CleaningResources -> {
-                        _currentState.value = LoadingState.PreparingFile
-                        true
-                    }
-                    else -> false
-                }
-            }
-            
-            is LoadingAction.FilePreparationComplete -> {
-                when (currentState) {
-                    is LoadingState.PreparingFile -> {
-                        if (action.state != null) {
-                            _currentState.value = LoadingState.Ready(action.state)
-                            _pendingRequest.value = null
-                        } else {
-                            _currentState.value = LoadingState.Error("Failed to prepare file")
-                            _pendingRequest.value = null
-                        }
-                        true
-                    }
-                    else -> false
-                }
-            }
-            
-            is LoadingAction.FilePreparationFailed -> {
-                when (currentState) {
-                    is LoadingState.PreparingFile -> {
-                        _currentState.value = LoadingState.Error(
-                            action.error.message ?: "Unknown error",
-                            action.error
-                        )
-                        _pendingRequest.value = null
-                        true
-                    }
-                    else -> false
-                }
-            }
-            
-            is LoadingAction.Reset -> {
-                _currentState.value = LoadingState.Idle
-                _pendingRequest.value = null
-                true
-            }
-        }
-    }
-    
-    /**
-     * 現在の状態が指定された状態かチェック
-     */
-    fun isStoppingUI(): Boolean = _currentState.value is LoadingState.StoppingUI
-    fun isCleaningResources(): Boolean = _currentState.value is LoadingState.CleaningResources
-    fun isPreparingFile(): Boolean = _currentState.value is LoadingState.PreparingFile
-    
-    /**
-     * エラー状態かチェック
-     */
-    fun isError(): Boolean = _currentState.value is LoadingState.Error
-    
-    /**
-     * ローディング中かチェック
-     */
-    fun isLoading(): Boolean {
-        return when (_currentState.value) {
-            is LoadingState.StoppingUI,
-            is LoadingState.CleaningResources,
-            is LoadingState.PreparingFile -> true
-            else -> false
-        }
-    }
-    
-    /**
-     * 準備完了状態かチェック
-     */
-    fun isReady(): Boolean = _currentState.value is LoadingState.Ready
-    
-    /**
-     * 準備完了状態のデータを取得
-     */
-    fun getReadyState(): ImageViewerState? {
-        return (_currentState.value as? LoadingState.Ready)?.state
-    }
-    
-    /**
-     * エラー情報を取得
-     */
-    fun getErrorInfo(): Pair<String, Throwable?>? {
-        return (_currentState.value as? LoadingState.Error)?.let { error ->
-            error.message to error.throwable
-        }
-    }
-}
-
-/**
- * ImageViewerStateのデータクラス（MainScreenから移動）
- */
-data class ImageViewerState(
-    val imageEntries: List<ZipImageEntry>,
-    val currentZipUri: Uri,
-    val currentZipFile: File?,
-    val fileNavigationInfo: com.celstech.satendroid.navigation.FileNavigationManager.NavigationInfo?,
-    val initialPage: Int = 0
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SettingsScreenNew(
+    readingDataManager: SimpleReadingDataManager,
+    directZipHandler: com.celstech.satendroid.utils.DirectZipImageHandler? = null,
+    onBackPressed: () -> Unit
 ) {
-    val fileId: String
-        get() = currentZipFile?.absolutePath ?: currentZipUri.toString()
+    val reverseSwipeDirection by readingDataManager.reverseSwipeDirection.collectAsState()
+    
+    var showConfirmClearDialog by remember { mutableStateOf(false) }
+    
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("設定") },
+                navigationIcon = {
+                    IconButton(onClick = onBackPressed) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "戻る")
+                    }
+                }
+            )
+        }
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            // スワイプ設定
+            Card(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Text(
+                        text = "操作設定",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    
+                    Spacer(modifier = Modifier.height(16.dp))
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("スワイプ方向を逆転")
+                        Switch(
+                            checked = reverseSwipeDirection,
+                            onCheckedChange = { readingDataManager.setReverseSwipeDirection(it) }
+                        )
+                    }
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(24.dp))
+            
+            // データ管理
+            Card(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Text(
+                        text = "データ管理",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    
+                    Spacer(modifier = Modifier.height(16.dp))
+                    
+                    OutlinedButton(
+                        onClick = { showConfirmClearDialog = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Delete, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("全ての読書データを削除")
+                    }
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(24.dp))
+            
+            // メモリ管理
+            if (directZipHandler != null) {
+                Card(
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp)
+                    ) {
+                        Text(
+                            text = "メモリ管理",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        
+                        Spacer(modifier = Modifier.height(16.dp))
+                        
+                        OutlinedButton(
+                            onClick = { directZipHandler.clearMemoryCacheAsync() },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("メモリキャッシュをクリア")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    if (showConfirmClearDialog) {
+        InfoDialog(
+            title = "読書データを削除",
+            message = "全ての読書進捗データを削除しますか？この操作は元に戻せません。",
+            confirmText = "削除",
+            dismissText = "キャンセル",
+            onConfirm = {
+                readingDataManager.clearAllData()
+                showConfirmClearDialog = false
+            },
+            onDismiss = { showConfirmClearDialog = false }
+        )
+    }
 }

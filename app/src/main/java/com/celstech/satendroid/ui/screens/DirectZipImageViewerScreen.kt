@@ -56,6 +56,7 @@ import coil.compose.AsyncImagePainter
 import coil.compose.rememberAsyncImagePainter
 import com.celstech.satendroid.navigation.FileNavigationManager
 import com.celstech.satendroid.utils.UnifiedReadingDataManager
+import com.celstech.satendroid.utils.SimpleReadingDataManager
 import com.celstech.satendroid.utils.DirectZipImageHandler
 import com.celstech.satendroid.utils.ZipImageEntry
 import kotlinx.coroutines.launch
@@ -78,12 +79,12 @@ fun DirectZipImageViewerScreen(
     onNavigateToPreviousFile: (() -> Unit)? = null,
     onNavigateToNextFile: (() -> Unit)? = null,
     fileNavigationInfo: FileNavigationManager.NavigationInfo? = null,
-    cacheManager: UnifiedReadingDataManager,
+    readingDataManager: SimpleReadingDataManager,
     directZipHandler: DirectZipImageHandler? = null,
     onPageChanged: ((currentPage: Int, totalPages: Int, zipFile: File) -> Unit)? = null
 ) {
     val coroutineScope = rememberCoroutineScope()
-    val reverseSwipeDirection by cacheManager.reverseSwipeDirection.collectAsState()
+    val reverseSwipeDirection by readingDataManager.reverseSwipeDirection.collectAsState()
     val context = LocalContext.current
 
     // State for page jump slider

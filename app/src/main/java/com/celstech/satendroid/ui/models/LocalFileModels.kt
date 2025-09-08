@@ -1,13 +1,15 @@
 package com.celstech.satendroid.ui.models
 
 import android.graphics.Bitmap
+import kotlinx.serialization.Serializable
 import java.io.File
 
 /**
  * ローカルファイル関連のデータモデル
  */
 
-// 読書状況を表すenum
+// 読書状況を表すenum（シリアライズ対応）
+@Serializable
 enum class ReadingStatus {
     UNREAD,     // 未読
     READING,    // 読書中（開いたが最後まで見ていない）

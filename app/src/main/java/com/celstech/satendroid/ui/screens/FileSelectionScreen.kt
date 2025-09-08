@@ -89,7 +89,7 @@ fun FileSelectionScreen(
                     zipFileItem.totalImageCount
                 } else {
                     // UnifiedReadingDataManagerから取得を試行
-                    viewModel.directZipHandler.getUnifiedDataManager().getTotalImages(file.absolutePath).takeIf { it > 0 } ?: (currentPage + 1)
+                    viewModel.readingDataManager.getTotalPages(file.absolutePath).takeIf { it > 0 } ?: (currentPage + 1)
                 }
                 
                 // totalImageCountが正しくない場合は更新
@@ -127,7 +127,7 @@ fun FileSelectionScreen(
                     zipFileItem.totalImageCount
                 } else {
                     // UnifiedReadingDataManagerから取得を試行
-                    viewModel.directZipHandler.getUnifiedDataManager().getTotalImages(file.absolutePath).takeIf { it > 0 } ?: 1
+                    viewModel.readingDataManager.getTotalPages(file.absolutePath).takeIf { it > 0 } ?: 1
                 }
                 
                 // 最後のページまで読んだとして既読にマーク

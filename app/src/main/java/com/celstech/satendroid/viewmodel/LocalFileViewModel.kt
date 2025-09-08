@@ -12,65 +12,61 @@ import com.celstech.satendroid.selection.SelectionManager
 import com.celstech.satendroid.ui.models.LocalFileUiState
 import com.celstech.satendroid.ui.models.LocalItem
 import com.celstech.satendroid.utils.DirectZipImageHandler
+import com.celstech.satendroid.utils.SimpleReadingDataManager
+import com.celstech.satendroid.utils.ReadingProgress
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.snapshots.SnapshotStateMap
-import com.celstech.satendroid.utils.ReadingProgress
 import java.io.File
 
 /**
- * ローカルファイル管理のViewModel
- * Repository、Navigation、Selectionの各Managerを使用してスリム化
- * 直接ZIPアクセス版 - DirectZipImageHandlerを使用
+ * ローカルファイル管理のViewModel（シンプル化版）
+ * 
+ * 変更点:
+ * - SimpleReadingDataManagerを使用
+ * - 単一キャッシュレイヤー
+ * - 即座保存
  */
 class LocalFileViewModel(
     private val repository: LocalFileRepository,
     private val navigationManager: LocalFileNavigationManager,
     private val selectionManager: SelectionManager,
-    val directZipHandler: DirectZipImageHandler, // FileSelectionScreenからアクセス可能にするためpublicに変更
-    private val fileNavigationManager: FileNavigationManager
+    val directZipHandler: DirectZipImageHandler,
+    private val fileNavigationManager: FileNavigationManager,
+    val readingDataManager: SimpleReadingDataManager // 新システム（public）
 ) : ViewModel() {
 
     // UI state
     private val _uiState = MutableStateFlow(LocalFileUiState())
     val uiState: StateFlow<LocalFileUiState> = _uiState.asStateFlow()
 
-    // Reading states for all files (State management for performance)
+    // 単一キャッシュレイヤー（ReadingProgress形式）
     private val _readingStates = mutableStateMapOf<String, ReadingProgress>()
     val readingStates: SnapshotStateMap<String, ReadingProgress> = _readingStates
 
     /**
-     * Load reading states for all ZIP files into memory state
+     * ファイルの読書状態をメモリキャッシュに読み込み
      */
     private fun loadReadingStatesForFiles(items: List<LocalItem>) {
-        viewModelScope.launch {
-            items.filterIsInstance<LocalItem.ZipFile>().forEach { zipFile ->
-                try {
-                    val progress = repository.getReadingProgressSync(zipFile.file.absolutePath)
-                    _readingStates[zipFile.file.absolutePath] = progress
-                    println("DEBUG: ViewModel loaded reading state - File: ${zipFile.name}, Status: ${progress.status}, Position: ${progress.currentIndex}")
-                } catch (e: Exception) {
-                    // Initialize with default state if reading fails
-                    _readingStates[zipFile.file.absolutePath] = ReadingProgress(
-                        status = com.celstech.satendroid.ui.models.ReadingStatus.UNREAD,
-                        currentIndex = 0
-                    )
-                }
+        items.filterIsInstance<LocalItem.ZipFile>().forEach { zipFile ->
+            try {
+                val progress = readingDataManager.getReadingProgress(zipFile.file.absolutePath)
+                _readingStates[zipFile.file.absolutePath] = progress
+                println("DEBUG: ViewModel loaded reading state - File: ${zipFile.name}, Status: ${progress.status}, Position: ${progress.currentIndex}")
+            } catch (e: Exception) {
+                println("ERROR: Failed to load reading state for ${zipFile.name}: ${e.message}")
             }
         }
     }
 
     /**
-     * Get reading progress for a file (high-performance memory access)
+     * 読書進捗を取得（高速メモリアクセス）
      */
     fun getReadingProgress(filePath: String): ReadingProgress {
-        return _readingStates[filePath] ?: ReadingProgress(
-            status = com.celstech.satendroid.ui.models.ReadingStatus.UNREAD,
-            currentIndex = 0
-        )
+        return _readingStates[filePath] ?: readingDataManager.getReadingProgress(filePath)
     }
 
     // Navigation
@@ -167,7 +163,7 @@ class LocalFileViewModel(
                     isRefreshing = false
                 )
 
-                // Load reading states for all ZIP files (high-performance State management)
+                // メモリキャッシュに読書状態を読み込み
                 loadReadingStatesForFiles(items)
 
                 println("DEBUG: Found ${items.size} items in path '$path'")
@@ -186,7 +182,11 @@ class LocalFileViewModel(
         viewModelScope.launch {
             result = repository.deleteFile(item)
             if (result) {
-                // キャッシュからも削除
+                // 読書データをクリア
+                readingDataManager.clearFileData(item.file.absolutePath)
+                _readingStates.remove(item.file.absolutePath)
+                
+                // ZIP Handler側も削除
                 val zipUri = item.file.toUri()
                 directZipHandler.onZipFileDeleted(zipUri, item.file)
             }
@@ -198,9 +198,7 @@ class LocalFileViewModel(
         var result = false
         viewModelScope.launch {
             result = repository.deleteFolder(item)
-            // フォルダ内のZIPファイルのキャッシュもクリア
             if (result) {
-                // フォルダ内のZIPファイルを検索してキャッシュをクリア
                 clearCacheForFolder(item.path)
             }
         }
@@ -211,10 +209,13 @@ class LocalFileViewModel(
         viewModelScope.launch {
             val (successCount, failCount) = repository.deleteItems(_uiState.value.selectedItems)
 
-            // 成功した削除項目のキャッシュをクリア
+            // 削除されたアイテムのキャッシュをクリア
             _uiState.value.selectedItems.forEach { item ->
                 when (item) {
                     is LocalItem.ZipFile -> {
+                        readingDataManager.clearFileData(item.file.absolutePath)
+                        _readingStates.remove(item.file.absolutePath)
+                        
                         val zipUri = item.file.toUri()
                         directZipHandler.onZipFileDeleted(zipUri, item.file)
                     }
@@ -235,13 +236,21 @@ class LocalFileViewModel(
     }
 
     private fun clearCacheForFolder(folderPath: String) {
-        // フォルダー内のZIPファイルのキャッシュのみをクリア（全データ削除を防止）
+        // フォルダー内のファイルデータをクリア（安全版）
         viewModelScope.launch {
             try {
                 println("DEBUG: Clearing cache for folder: $folderPath")
                 
-                // UnifiedReadingDataManagerのフォルダー内ファイルクリア機能を使用
-                directZipHandler.getUnifiedDataManager().clearReadingDataForFolder(folderPath)
+                // SimpleReadingDataManagerでフォルダーデータクリア
+                readingDataManager.clearFolderData(folderPath)
+                
+                // メモリキャッシュからも該当ファイルを削除
+                val keysToRemove = _readingStates.keys.filter { filePath ->
+                    filePath.contains(folderPath)
+                }
+                keysToRemove.forEach { key ->
+                    _readingStates.remove(key)
+                }
                 
                 // DirectZipImageHandlerでもフォルダー削除処理を実行
                 directZipHandler.onFolderDeleted(folderPath)
@@ -267,41 +276,27 @@ class LocalFileViewModel(
         _uiState.value = _uiState.value.copy(showDeleteZipWithPermissionDialog = show)
     }
 
-    // Reading status management
+    // Reading status management（シンプル化版）
     fun updateReadingStatus(zipFile: LocalItem.ZipFile, currentIndex: Int) {
         viewModelScope.launch {
             try {
-                println("=== ViewModel.updateReadingStatus START ===")
-                println("DEBUG: ViewModel - Input parameters:")
-                println("DEBUG:   File: ${zipFile.name}")
-                println("DEBUG:   File Path: ${zipFile.file.absolutePath}")
-                println("DEBUG:   Current Index: $currentIndex")
-                println("DEBUG:   ZipFile.totalImageCount: ${zipFile.totalImageCount}")
+                println("=== ViewModel.updateReadingStatus START (Simplified) ===")
+                println("DEBUG: File: ${zipFile.name}")
+                println("DEBUG: Current Index: $currentIndex")
+                println("DEBUG: Total Images: ${zipFile.totalImageCount}")
                 
-                // デバッグ: 更新前の全データを表示
-                directZipHandler.getUnifiedDataManager().debugPrintFileData(zipFile.file.absolutePath)
-                
-                // 現在の読書状態を確認（更新前）
-                val beforeStatus = repository.getReadingStatusSync(zipFile.file.absolutePath)
-                val beforePosition = repository.getReadingPositionSync(zipFile.file.absolutePath)
-                println("DEBUG: ViewModel - Before update:")
-                println("DEBUG:   Before Status: $beforeStatus")
-                println("DEBUG:   Before Position: $beforePosition")
+                // 即座保存（バッチ処理なし）
+                readingDataManager.saveReadingData(
+                    filePath = zipFile.file.absolutePath,
+                    currentPage = currentIndex,
+                    totalPages = zipFile.totalImageCount
+                )
 
-                // Repository経由で統一データ管理システムに更新
-                repository.updateReadingStatus(zipFile, currentIndex)
-
-                // State immediately update (high-performance UI updates)
-                val newProgress = repository.getReadingProgressSync(zipFile.file.absolutePath)
+                // メモリキャッシュ更新
+                val newProgress = readingDataManager.getReadingProgress(zipFile.file.absolutePath)
                 _readingStates[zipFile.file.absolutePath] = newProgress
 
-                println("DEBUG: ViewModel - After update:")
-                println("DEBUG:   New Status: ${newProgress.status}")
-                println("DEBUG:   New Position: ${newProgress.currentIndex}")
-                println("DEBUG:   State Cache Updated: ${_readingStates.containsKey(zipFile.file.absolutePath)}")
-                
-                // デバッグ: 更新後の全データを表示
-                directZipHandler.getUnifiedDataManager().debugPrintFileData(zipFile.file.absolutePath)
+                println("DEBUG: Updated - Status: ${newProgress.status}, Position: ${newProgress.currentIndex}")
                 println("=== ViewModel.updateReadingStatus END ===")
 
             } catch (e: Exception) {
@@ -323,69 +318,38 @@ class LocalFileViewModel(
         updateReadingStatus(zipFile, 0)
     }
 
-    // テスト用: 読書状態を強制的に更新
-    fun testUpdateReadingStatus(
-        zipFile: LocalItem.ZipFile,
-        status: com.celstech.satendroid.ui.models.ReadingStatus
-    ) {
-        viewModelScope.launch {
-            try {
-                val position = when (status) {
-                    com.celstech.satendroid.ui.models.ReadingStatus.UNREAD -> 0
-                    com.celstech.satendroid.ui.models.ReadingStatus.READING -> {
-                        if (zipFile.totalImageCount > 0) zipFile.totalImageCount / 2 else 0
-                    }
-
-                    com.celstech.satendroid.ui.models.ReadingStatus.COMPLETED -> {
-                        if (zipFile.totalImageCount > 0) zipFile.totalImageCount - 1 else 0
-                    }
-                }
-
-                // Repository経由で統一データ管理システムに更新
-                repository.updateReadingStatus(zipFile, position)
-
-                // Update State immediately (high-performance UI updates)
-                val newProgress = repository.getReadingProgressSync(zipFile.file.absolutePath)
-                _readingStates[zipFile.file.absolutePath] = newProgress
-
-                println("DEBUG: ViewModel test updated reading status - File: ${zipFile.name}, Position: $position, Status: ${newProgress.status}")
-
-            } catch (e: Exception) {
-                println("DEBUG: Failed to test update reading status: ${e.message}")
-                e.printStackTrace()
-            }
-        }
-    }
-
-    // デバッグ用: 現在のディレクトリを再スキャン
-    fun refreshCurrentDirectory() {
-        scanDirectory(_uiState.value.currentPath)
-    }
-
-    // ZIPファイルを開いたときに呼び出す（読書状態を自動更新）
+    // ZIPファイルを開いたときの処理
     fun onZipFileOpened(zipFile: LocalItem.ZipFile) {
         viewModelScope.launch {
             try {
-                // ファイルを開いた時点で「読書中」に設定（まだ何も見ていなくても）
-                // 少なくとも1ページ目を見たとして扱う
-                repository.updateReadingStatus(zipFile, 0)
+                // ファイルを開いた時点で読書中に設定
+                readingDataManager.saveReadingData(
+                    filePath = zipFile.file.absolutePath,
+                    currentPage = 0,
+                    totalPages = zipFile.totalImageCount
+                )
 
-                // Update State immediately (high-performance UI updates)
-                val newProgress = repository.getReadingProgressSync(zipFile.file.absolutePath)
+                // メモリキャッシュ更新
+                val newProgress = readingDataManager.getReadingProgress(zipFile.file.absolutePath)
                 _readingStates[zipFile.file.absolutePath] = newProgress
 
-                println("DEBUG: ViewModel marked file as opened - File: ${zipFile.name}, Status: ${newProgress.status}")
+                println("DEBUG: File opened - Status: ${newProgress.status}")
 
             } catch (e: Exception) {
-                println("DEBUG: Failed to update reading status on file open: ${e.message}")
+                println("ERROR: Failed to update reading status on file open: ${e.message}")
                 e.printStackTrace()
             }
         }
     }
 
-    // 画像ビューアーから戻ってきたときに呼び出す（読書状態を再取得）
+    // 画像ビューアーから戻ってきたときの処理
     fun onReturnFromImageViewer() {
         refreshCurrentDirectory()
+    }
+
+    // デバッグ用
+    fun refreshCurrentDirectory() {
+        scanDirectory(_uiState.value.currentPath)
     }
 
     override fun onCleared() {
@@ -404,12 +368,14 @@ class LocalFileViewModel(
                     val selectionManager = SelectionManager()
                     val directZipHandler = DirectZipImageHandler(context)
                     val fileNavigationManager = FileNavigationManager(context)
+                    val readingDataManager = SimpleReadingDataManager(context) // 新システム
                     return LocalFileViewModel(
                         repository,
                         navigationManager,
                         selectionManager,
                         directZipHandler,
-                        fileNavigationManager
+                        fileNavigationManager,
+                        readingDataManager
                     ) as T
                 }
             }

@@ -232,6 +232,7 @@ class ZipFileManager {
  */
 class DirectZipImageHandler(private val context: Context) {
     private val unifiedDataManager = UnifiedReadingDataManager(context)
+    private val simpleDataManager = SimpleReadingDataManager(context) // 新システム
 
     // ZipFile管理
     private val zipFileManager = ZipFileManager()
@@ -1132,6 +1133,9 @@ class DirectZipImageHandler(private val context: Context) {
 
     // 既存メソッドのデリゲート
     fun getUnifiedDataManager(): UnifiedReadingDataManager = unifiedDataManager
+    
+    // 新システムのアクセサ
+    fun getSimpleDataManager(): SimpleReadingDataManager = simpleDataManager
 
     fun generateFileIdentifier(zipUri: Uri, zipFile: File? = null): String {
         return try {
@@ -1163,6 +1167,9 @@ class DirectZipImageHandler(private val context: Context) {
                 
                 // UnifiedReadingDataManagerで読書データをクリア
                 unifiedDataManager.clearReadingDataForFolder(folderPath)
+                
+                // SimpleReadingDataManagerでも読書データをクリア
+                simpleDataManager.clearFolderData(folderPath)
                 
                 // メモリキャッシュからも関連データを削除
                 cacheMutex.withLock {
@@ -1202,39 +1209,51 @@ class DirectZipImageHandler(private val context: Context) {
         }
     }
 
+
+    
+
+
     fun onZipFileDeleted(zipUri: Uri, zipFile: File? = null) {
         preloadScope.launch {
-            unifiedDataManager.onFileDeleted(zipUri, zipFile)
-            val fileId = generateFileIdentifier(zipUri, zipFile)
-            
-            // キャッシュから関連データを同期化して削除
-            cacheMutex.withLock {
-                val keysToRemove = imageDataCache.keys.filter { it.startsWith(fileId) }
-                keysToRemove.forEach { key ->
-                    val data = imageDataCache.remove(key)
-                    if (data != null) {
-                        currentMemoryUsage.addAndGet(-data.size.toLong())
+            try {
+                val fileId = generateFileIdentifier(zipUri, zipFile)
+                
+                // 両方のシステムからデータを削除
+                unifiedDataManager.onFileDeleted(zipUri, zipFile)
+                simpleDataManager.clearFileData(fileId)
+                
+                // キャッシュから関連データを同期化して削除
+                cacheMutex.withLock {
+                    val keysToRemove = imageDataCache.keys.filter { it.startsWith(fileId) }
+                    keysToRemove.forEach { key ->
+                        val data = imageDataCache.remove(key)
+                        if (data != null) {
+                            currentMemoryUsage.addAndGet(-data.size.toLong())
+                        }
                     }
                 }
-            }
-            
-            // エントリキャッシュからも削除
-            stateMutex.withLock {
-                zipEntryCache.remove(fileId)
-            }
-
-            // 削除されたファイルのZipFileを強制的に閉じる
-            val filePath = zipFile?.absolutePath ?: run {
-                if (zipUri.scheme == "file") {
-                    zipUri.path
-                } else {
-                    null
+                
+                // エントリキャッシュからも削除
+                stateMutex.withLock {
+                    zipEntryCache.remove(fileId)
                 }
-            }
 
-            if (filePath != null) {
-                zipFileManager.forceCloseZipFile(filePath)
-                println("DEBUG: Force closed ZipFile for deleted file: ${zipFile?.name ?: zipUri}")
+                // 削除されたファイルのZipFileを強制的に閉じる
+                val filePath = zipFile?.absolutePath ?: run {
+                    if (zipUri.scheme == "file") {
+                        zipUri.path
+                    } else {
+                        null
+                    }
+                }
+
+                if (filePath != null) {
+                    zipFileManager.forceCloseZipFile(filePath)
+                    println("DEBUG: Force closed ZipFile for deleted file: ${zipFile?.name ?: zipUri}")
+                }
+            } catch (e: Exception) {
+                println("ERROR: Failed to handle file deletion: ${e.message}")
+                e.printStackTrace()
             }
         }
     }
