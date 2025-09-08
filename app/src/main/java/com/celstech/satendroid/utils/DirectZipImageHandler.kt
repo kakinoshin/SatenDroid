@@ -1149,7 +1149,7 @@ class DirectZipImageHandler(private val context: Context) {
         }
     }
 
-    fun getSavedPosition(zipUri: Uri, zipFile: File? = null): Int? {
+    fun getSavedPosition(zipUri: Uri, zipFile: File? = null): Int {
         return unifiedDataManager.getSavedPosition(zipUri, zipFile)
     }
 

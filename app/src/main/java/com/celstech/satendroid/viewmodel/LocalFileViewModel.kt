@@ -30,7 +30,7 @@ class LocalFileViewModel(
     private val repository: LocalFileRepository,
     private val navigationManager: LocalFileNavigationManager,
     private val selectionManager: SelectionManager,
-    private val directZipHandler: DirectZipImageHandler,
+    val directZipHandler: DirectZipImageHandler, // FileSelectionScreenからアクセス可能にするためpublicに変更
     private val fileNavigationManager: FileNavigationManager
 ) : ViewModel() {
 
@@ -266,6 +266,9 @@ class LocalFileViewModel(
                 println("DEBUG:   Current Index: $currentIndex")
                 println("DEBUG:   ZipFile.totalImageCount: ${zipFile.totalImageCount}")
                 
+                // デバッグ: 更新前の全データを表示
+                directZipHandler.getUnifiedDataManager().debugPrintFileData(zipFile.file.absolutePath)
+                
                 // 現在の読書状態を確認（更新前）
                 val beforeStatus = repository.getReadingStatusSync(zipFile.file.absolutePath)
                 val beforePosition = repository.getReadingPositionSync(zipFile.file.absolutePath)
@@ -284,6 +287,9 @@ class LocalFileViewModel(
                 println("DEBUG:   New Status: ${newProgress.status}")
                 println("DEBUG:   New Position: ${newProgress.currentIndex}")
                 println("DEBUG:   State Cache Updated: ${_readingStates.containsKey(zipFile.file.absolutePath)}")
+                
+                // デバッグ: 更新後の全データを表示
+                directZipHandler.getUnifiedDataManager().debugPrintFileData(zipFile.file.absolutePath)
                 println("=== ViewModel.updateReadingStatus END ===")
 
             } catch (e: Exception) {

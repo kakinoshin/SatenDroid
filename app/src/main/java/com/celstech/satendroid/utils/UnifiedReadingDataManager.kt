@@ -380,10 +380,10 @@ class UnifiedReadingDataManager(private val context: Context) {
     }
     
     /**
-     * 保存された位置を取得（URI/File対応版）
+     * 保存された位置を取得（URI/File対応版・修正版）
      * DirectZipImageHandlerからの呼び出し用
      */
-    fun getSavedPosition(zipUri: Uri, zipFile: File?): Int? {
+    fun getSavedPosition(zipUri: Uri, zipFile: File?): Int {
         val filePath = generateFileIdentifier(zipUri, zipFile)
         val normalizedPath = normalizeFilePath(filePath)
         val position = prefs.getInt(POSITION_PREFIX + normalizedPath, -1)
@@ -391,9 +391,14 @@ class UnifiedReadingDataManager(private val context: Context) {
         println("DEBUG: Getting saved position for: ${zipFile?.name ?: zipUri}")
         println("DEBUG:   File path: $filePath")
         println("DEBUG:   Normalized path: $normalizedPath")
-        println("DEBUG:   Saved position: $position")
+        println("DEBUG:   Raw saved position: $position")
         
-        return if (position >= 0) position else null
+        // -1 の場合は未読として扱い、0を返す
+        val result = if (position >= 0) position else 0
+        
+        println("DEBUG:   Final position: $result")
+        
+        return result
     }
     
     /**
@@ -671,7 +676,7 @@ class UnifiedReadingDataManager(private val context: Context) {
     }
     
     /**
-     * デバッグ用: 指定ファイルの全データを表示
+     * デバッグ用: 指定ファイルの全データを表示（詳細版）
      */
     fun debugPrintFileData(filePath: String) {
         val normalizedPath = normalizeFilePath(filePath)
@@ -681,13 +686,21 @@ class UnifiedReadingDataManager(private val context: Context) {
         val lastUpdated = prefs.getLong(LAST_UPDATED_PREFIX + normalizedPath, 0)
         val hash = prefs.getString(FILE_HASH_PREFIX + normalizedPath, null)
         
-        println("DEBUG: UnifiedDataManager - File: ${filePath.substringAfterLast('/')}")
-        println("DEBUG:   Position: $position")
-        println("DEBUG:   Status: $status")
-        println("DEBUG:   Total Images: $totalImages")
-        println("DEBUG:   Last Updated: $lastUpdated")
-        println("DEBUG:   Hash: $hash")
-        println("DEBUG:   Pending Batch: ${pendingPositions.containsKey(filePath)}")
+        println("=== UnifiedDataManager File Data Debug ===")
+        println("DEBUG: Original Path: $filePath")
+        println("DEBUG: Normalized Path: $normalizedPath")
+        println("DEBUG: Position: $position")
+        println("DEBUG: Status: $status")
+        println("DEBUG: Total Images: $totalImages")
+        println("DEBUG: Last Updated: $lastUpdated (${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(java.util.Date(lastUpdated))})")
+        println("DEBUG: Hash: $hash")
+        println("DEBUG: Pending Batch: ${pendingPositions.containsKey(filePath)}")
+        println("DEBUG: All preference keys containing this file:")
+        prefs.all.keys.filter { it.contains(normalizedPath) }.forEach { key ->
+            val value = prefs.all[key]
+            println("  $key = $value")
+        }
+        println("=== End Debug ===")
     }
     
     /**
