@@ -636,7 +636,7 @@ fun MainScreen() {
         }
 
         is ViewState.Settings -> {
-            SettingsScreenNew(
+            SettingsScreen(
                 readingDataManager = readingDataManager,
                 directZipHandler = directZipHandler,
                 onBackPressed = {
