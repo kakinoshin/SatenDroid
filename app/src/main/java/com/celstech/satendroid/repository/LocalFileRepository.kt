@@ -5,8 +5,6 @@ import android.os.Environment
 import com.celstech.satendroid.ui.models.LocalItem
 import com.celstech.satendroid.utils.LocalItemFactory
 import com.celstech.satendroid.utils.UnifiedReadingDataManager
-import com.celstech.satendroid.utils.ReadingProgress
-import com.celstech.satendroid.ui.models.ReadingStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -40,13 +38,13 @@ class LocalFileRepository(private val context: Context) {
                 for (child in children) {
                     when {
                         child.isDirectory -> {
-                            val folderItem = processFolderItem(child, "")
+                            val folderItem = processFolderItem(child)
                             if (folderItem != null) {
                                 allItems.add(folderItem)
                             }
                         }
                         child.isFile && child.extension.lowercase() == "zip" -> {
-                            val zipItem = processZipFileItem(child, "")
+                            val zipItem = processZipFileItem(child)
                             allItems.add(zipItem)
                         }
                     }
@@ -68,13 +66,13 @@ class LocalFileRepository(private val context: Context) {
             for (child in children) {
                 when {
                     child.isDirectory -> {
-                        val folderItem = processFolderItem(child, path)
+                        val folderItem = processFolderItem(child)
                         if (folderItem != null) {
                             allItems.add(folderItem)
                         }
                     }
                     child.isFile && child.extension.lowercase() == "zip" -> {
-                        val zipItem = processZipFileItem(child, path)
+                        val zipItem = processZipFileItem(child)
                         allItems.add(zipItem)
                     }
                 }
@@ -149,90 +147,7 @@ class LocalFileRepository(private val context: Context) {
         Pair(successCount, failCount)
     }
 
-    /**
-     * ZipFileの読書状況を更新（統一データ管理システム使用）
-     */
-    suspend fun updateReadingStatus(
-        zipFile: LocalItem.ZipFile,
-        currentIndex: Int
-    ) {
-        println("DEBUG: Repository.updateReadingStatus called")
-        println("DEBUG:   File: ${zipFile.name}")
-        println("DEBUG:   File Path: ${zipFile.file.absolutePath}")
-        println("DEBUG:   Current Index: $currentIndex")
-        println("DEBUG:   ZipFile.totalImageCount: ${zipFile.totalImageCount}")
-        
-        // 統一データ管理システムで位置と状況を同時更新
-        unifiedDataManager.saveReadingPosition(
-            filePath = zipFile.file.absolutePath,
-            position = currentIndex,
-            totalImages = zipFile.totalImageCount
-        )
-        
-        // 総画像数も保存（LocalItemFactoryで取得した値を保持）
-        unifiedDataManager.saveTotalImages(
-            filePath = zipFile.file.absolutePath,
-            totalImages = zipFile.totalImageCount
-        )
-        
-        // 保存後の確認
-        val savedStatus = unifiedDataManager.getReadingStatusSync(zipFile.file.absolutePath)
-        val savedPosition = unifiedDataManager.getReadingPositionSync(zipFile.file.absolutePath)
-        
-        println("DEBUG: Repository - After update verification:")
-        println("DEBUG:   Saved Status: $savedStatus")
-        println("DEBUG:   Saved Position: $savedPosition")
-        println("DEBUG:   Total Images: ${zipFile.totalImageCount}")
-    }
-    
-    /**
-     * 読書位置を取得
-     */
-    suspend fun getReadingPosition(filePath: String): Int {
-        return unifiedDataManager.getReadingPosition(filePath)
-    }
-    
-    /**
-     * 読書位置を同期的に取得（UI用）
-     */
-    fun getReadingPositionSync(filePath: String): Int {
-        return unifiedDataManager.getReadingPositionSync(filePath)
-    }
-    
-    /**
-     * 読書状況を取得
-     */
-    suspend fun getReadingStatus(filePath: String): ReadingStatus {
-        return unifiedDataManager.getReadingStatus(filePath)
-    }
-    
-    /**
-     * 読書状況を同期的に取得（UI用）
-     */
-    fun getReadingStatusSync(filePath: String): ReadingStatus {
-        return unifiedDataManager.getReadingStatusSync(filePath)
-    }
-    
-    /**
-     * 読書進捗情報を取得
-     */
-    suspend fun getReadingProgress(filePath: String): ReadingProgress {
-        return unifiedDataManager.getReadingProgress(filePath)
-    }
-    
-    /**
-     * 読書進捗情報を同期的に取得（UI用）
-     */
-    fun getReadingProgressSync(filePath: String): ReadingProgress {
-        return unifiedDataManager.getReadingProgressSync(filePath)
-    }
-    
-    /**
-     * 総画像数を取得
-     */
-    fun getTotalImages(filePath: String): Int {
-        return unifiedDataManager.getTotalImages(filePath)
-    }
+
 
     /**
      * フォルダ内のZIPファイルの読書状況をクリア（安全版）
@@ -268,7 +183,7 @@ class LocalFileRepository(private val context: Context) {
     /**
      * フォルダアイテムを処理
      */
-    private suspend fun processFolderItem(child: File, path: String): LocalItem.Folder? {
+    private suspend fun processFolderItem(child: File): LocalItem.Folder? {
         val subFiles = child.listFiles() ?: return null
         var hasZipFiles = false
         var hasSubfolders = false
@@ -305,7 +220,7 @@ class LocalFileRepository(private val context: Context) {
     /**
      * ZIPファイルアイテムを処理
      */
-    private suspend fun processZipFileItem(child: File, path: String): LocalItem.ZipFile {
+    private suspend fun processZipFileItem(child: File): LocalItem.ZipFile {
         // 絶対パスを使用
         val absolutePath = child.absolutePath
         
