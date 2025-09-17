@@ -54,7 +54,8 @@ import java.io.File
 fun DropboxScreen(
     dropboxAuthManager: DropboxAuthManager,
     onBackToLocal: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    currentLocalPath: String = "" // 現在のローカルパスパラメータを追加
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -71,7 +72,7 @@ fun DropboxScreen(
     var isDownloading by remember { mutableStateOf(false) }
     var downloadProgress by remember { mutableStateOf(DownloadProgress()) }
 
-    // Function to download ZIP file to Downloads folder
+    // Function to download ZIP file to current location or Downloads folder
     fun downloadZipFile(item: DropboxItem.ZipFile, client: com.dropbox.core.v2.DbxClientV2) {
         coroutineScope.launch {
             try {
@@ -84,33 +85,34 @@ fun DropboxScreen(
                     totalFiles = 1
                 )
 
-                // Use app-specific external files directory (reliable access)
-                val appDownloadsDir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
-                    ?: context.filesDir // Fallback to internal storage
+                // 一括ダウンロードと統一されたダウンロード先決定ロジック
+                val downloadDir = if (currentLocalPath.isNotEmpty()) {
+                    File(currentLocalPath)
+                } else {
+                    val appDownloadsDir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
+                        ?: context.filesDir
+                    File(appDownloadsDir, "SatenDroid")
+                }
 
-                val satenDroidDir = File(appDownloadsDir, "SatenDroid")
+                println("DEBUG: Download directory determined: ${downloadDir.absolutePath}")
+                println("DEBUG: Current local path: '$currentLocalPath'")
 
                 // Create directory with detailed error checking
-                if (!satenDroidDir.exists()) {
-                    val created = satenDroidDir.mkdirs()
+                if (!downloadDir.exists()) {
+                    val created = downloadDir.mkdirs()
                     println("DEBUG: Directory creation result: $created")
-                    println("DEBUG: Directory path: ${satenDroidDir.absolutePath}")
-                    println("DEBUG: Directory exists after creation: ${satenDroidDir.exists()}")
+                    println("DEBUG: Directory path: ${downloadDir.absolutePath}")
+                    println("DEBUG: Directory exists after creation: ${downloadDir.exists()}")
 
-                    if (!created && !satenDroidDir.exists()) {
-                        throw Exception("Failed to create download directory: ${satenDroidDir.absolutePath}")
+                    if (!created && !downloadDir.exists()) {
+                        throw Exception("Failed to create download directory: ${downloadDir.absolutePath}")
                     }
                 }
 
-                val localFile = File(satenDroidDir, item.name)
+                val localFile = File(downloadDir, item.name)
                 println("DEBUG: Downloading to: ${localFile.absolutePath}")
 
-                // Check if parent directory is writable
-                if (!satenDroidDir.canWrite()) {
-                    throw Exception("Cannot write to directory: ${satenDroidDir.absolutePath}")
-                }
-
-                var startTime = System.currentTimeMillis()
+                val startTime = System.currentTimeMillis()
 
                 withContext(Dispatchers.IO) {
                     val downloader = client.files().download(item.path)
@@ -151,7 +153,14 @@ fun DropboxScreen(
                     }
                 }
 
-                downloadMessage = "✅ Downloaded: ${item.name}\nSaved to: ${localFile.absolutePath}"
+                val downloadLocationText = if (currentLocalPath.isNotEmpty()) {
+                    "current folder"
+                } else {
+                    "SatenDroid folder"
+                }
+
+                downloadMessage =
+                    "✅ Downloaded: ${item.name}\nSaved to $downloadLocationText\nPath: ${localFile.absolutePath}"
                 println("DEBUG: Downloaded ${item.name} to ${localFile.absolutePath}")
 
             } catch (e: Exception) {
@@ -189,38 +198,47 @@ fun DropboxScreen(
                     totalBytes = totalBytes
                 )
 
-                // Use app-specific external files directory (reliable access)
-                val appDownloadsDir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
-                    ?: context.filesDir // Fallback to internal storage
+                // 単一ダウンロードと統一されたダウンロード先決定ロジック
+                val baseDownloadDir = if (currentLocalPath.isNotEmpty()) {
+                    File(currentLocalPath)
+                } else {
+                    val appDownloadsDir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
+                        ?: context.filesDir
+                    File(appDownloadsDir, "SatenDroid")
+                }
 
-                val satenDroidDir = File(appDownloadsDir, "SatenDroid")
+                // バッチダウンロード用サブフォルダの作成
+                val batchDownloadDir = if (currentLocalPath.isNotEmpty()) {
+                    // 現在のローカルパスが設定されている場合、そこに直接ダウンロード
+                    baseDownloadDir
+                } else {
+                    // ルートの場合はフォルダ名でサブディレクトリを作成
+                    File(baseDownloadDir, folderName)
+                }
+
+                println("DEBUG: Base download directory: ${baseDownloadDir.absolutePath}")
+                println("DEBUG: Batch download directory: ${batchDownloadDir.absolutePath}")
 
                 // Create base directory with detailed error checking
-                if (!satenDroidDir.exists()) {
-                    val created = satenDroidDir.mkdirs()
+                if (!baseDownloadDir.exists()) {
+                    val created = baseDownloadDir.mkdirs()
                     println("DEBUG: Base directory creation result: $created")
-                    println("DEBUG: Base directory path: ${satenDroidDir.absolutePath}")
+                    println("DEBUG: Base directory path: ${baseDownloadDir.absolutePath}")
 
-                    if (!created && !satenDroidDir.exists()) {
-                        throw Exception("Failed to create base directory: ${satenDroidDir.absolutePath}")
+                    if (!created && !baseDownloadDir.exists()) {
+                        throw Exception("Failed to create base directory: ${baseDownloadDir.absolutePath}")
                     }
                 }
 
-                // Create folder-specific directory
-                val folderDir = File(satenDroidDir, folderName)
-                if (!folderDir.exists()) {
-                    val created = folderDir.mkdirs()
-                    println("DEBUG: Folder directory creation result: $created")
-                    println("DEBUG: Folder directory path: ${folderDir.absolutePath}")
+                // Create batch download directory if different from base
+                if (batchDownloadDir != baseDownloadDir && !batchDownloadDir.exists()) {
+                    val created = batchDownloadDir.mkdirs()
+                    println("DEBUG: Batch directory creation result: $created")
+                    println("DEBUG: Batch directory path: ${batchDownloadDir.absolutePath}")
 
-                    if (!created && !folderDir.exists()) {
-                        throw Exception("Failed to create folder directory: ${folderDir.absolutePath}")
+                    if (!created && !batchDownloadDir.exists()) {
+                        throw Exception("Failed to create batch directory: ${batchDownloadDir.absolutePath}")
                     }
-                }
-
-                // Check if directories are writable
-                if (!folderDir.canWrite()) {
-                    throw Exception("Cannot write to folder directory: ${folderDir.absolutePath}")
                 }
 
                 var successCount = 0
@@ -236,7 +254,7 @@ fun DropboxScreen(
                             currentFileProgress = 0f
                         )
 
-                        val localFile = File(folderDir, zipFile.name)
+                        val localFile = File(batchDownloadDir, zipFile.name)
                         println("DEBUG: Downloading ${zipFile.name} to: ${localFile.absolutePath}")
 
                         withContext(Dispatchers.IO) {
@@ -270,7 +288,9 @@ fun DropboxScreen(
                                             currentFileProgress = fileBytesDownloaded.toFloat() / zipFile.size.toFloat(),
                                             bytesDownloaded = totalBytesDownloaded,
                                             downloadSpeed = FormatUtils.formatSpeed(speed),
-                                            estimatedTimeRemaining = FormatUtils.formatTime(remaining)
+                                            estimatedTimeRemaining = FormatUtils.formatTime(
+                                                remaining
+                                            )
                                         )
                                     }
                                 }
@@ -296,12 +316,19 @@ fun DropboxScreen(
                     }
                 }
 
+                val downloadLocationText = if (currentLocalPath.isNotEmpty()) {
+                    "current folder"
+                } else {
+                    "SatenDroid/${folderName}"
+                }
+
                 downloadMessage = "✅ Folder download complete!\n" +
                         "Folder: $folderName\n" +
                         "Success: $successCount files\n" +
                         "Failed: $failCount files\n" +
                         "Total size: ${FormatUtils.formatFileSize(totalBytesDownloaded)}\n" +
-                        "Saved to: ${folderDir.absolutePath}"
+                        "Saved to $downloadLocationText\n" +
+                        "Path: ${batchDownloadDir.absolutePath}"
 
             } catch (e: Exception) {
                 downloadMessage = "❌ Folder download failed: ${e.message}"
@@ -513,45 +540,72 @@ fun DropboxScreen(
                                     .padding(bottom = 16.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                if (currentPath.isNotEmpty()) {
-                                    Button(
-                                        onClick = {
-                                            val parentPath = if (currentPath.contains("/")) {
-                                                currentPath.substringBeforeLast("/")
-                                            } else {
-                                                ""
-                                            }
-                                            val authenticatedState =
-                                                authState as DropboxAuthState.Authenticated
-                                            loadFolder(parentPath, authenticatedState.client)
-                                        },
-                                        modifier = Modifier.padding(end = 8.dp)
-                                    ) {
-                                        Text("← Back")
+                                Column(
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    // Dropbox path
+                                    Text(
+                                        text = if (currentPath.isEmpty()) "📁 Dropbox Root" else "☁️ $currentPath",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                                    )
+
+                                    // Download destination info
+                                    if (currentLocalPath.isNotEmpty()) {
+                                        Text(
+                                            text = "📥 Downloads to: ${
+                                                currentLocalPath.substringAfterLast(
+                                                    "/"
+                                                )
+                                            }",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.padding(top = 4.dp)
+                                        )
+                                    } else {
+                                        Text(
+                                            text = "📥 Downloads to: SatenDroid folder",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.padding(top = 4.dp)
+                                        )
                                     }
                                 }
 
-                                Text(
-                                    text = if (currentPath.isEmpty()) "📁 Root Folder" else "📁 $currentPath",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                                    modifier = Modifier.weight(1f)
-                                )
+                                // Navigation buttons
+                                Row {
+                                    if (currentPath.isNotEmpty()) {
+                                        Button(
+                                            onClick = {
+                                                val parentPath = if (currentPath.contains("/")) {
+                                                    currentPath.substringBeforeLast("/")
+                                                } else {
+                                                    ""
+                                                }
+                                                val authenticatedState =
+                                                    authState as DropboxAuthState.Authenticated
+                                                loadFolder(parentPath, authenticatedState.client)
+                                            },
+                                            modifier = Modifier.padding(end = 8.dp)
+                                        ) {
+                                            Text("← Back")
+                                        }
+                                    }
 
-                                // Download All ZIPs in current folder button
-                                val zipCount =
-                                    dropboxItems.filterIsInstance<DropboxItem.ZipFile>().size
-                                if (zipCount > 0) {
-                                    OutlinedButton(
-                                        onClick = {
-                                            val authenticatedState =
-                                                authState as DropboxAuthState.Authenticated
-                                            downloadFolderZips(authenticatedState.client)
-                                        },
-                                        enabled = !isLoadingFiles && !isDownloading,
-                                        modifier = Modifier.padding(start = 8.dp)
-                                    ) {
-                                        Text("⬇️ All ($zipCount)")
+                                    // Download All ZIPs in current folder button
+                                    val zipCount =
+                                        dropboxItems.filterIsInstance<DropboxItem.ZipFile>().size
+                                    if (zipCount > 0) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                val authenticatedState =
+                                                    authState as DropboxAuthState.Authenticated
+                                                downloadFolderZips(authenticatedState.client)
+                                            },
+                                            enabled = !isLoadingFiles && !isDownloading
+                                        ) {
+                                            Text("⬇️ All ($zipCount)")
+                                        }
                                     }
                                 }
                             }
@@ -643,7 +697,11 @@ fun DropboxScreen(
                                         if (downloadProgress.totalBytes > 0) {
                                             Spacer(modifier = Modifier.height(4.dp))
                                             Text(
-                                                text = "${FormatUtils.formatFileSize(downloadProgress.bytesDownloaded)} / ${
+                                                text = "${
+                                                    FormatUtils.formatFileSize(
+                                                        downloadProgress.bytesDownloaded
+                                                    )
+                                                } / ${
                                                     FormatUtils.formatFileSize(
                                                         downloadProgress.totalBytes
                                                     )

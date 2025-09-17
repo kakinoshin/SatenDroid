@@ -25,17 +25,45 @@ class LocalFileRepository(private val context: Context) {
      */
     suspend fun scanDirectory(path: String = ""): List<LocalItem> = withContext(Dispatchers.IO) {
         val allItems = mutableListOf<LocalItem>()
-        val baseDirectories = getBaseDirectories()
         
-        // Scan the specified path within each base directory
-        for (baseDir in baseDirectories) {
-            val targetDir = if (path.isEmpty()) baseDir else File(baseDir, path)
+        if (path.isEmpty()) {
+            // ルートレベルスキャン（従来の複数ベースディレクトリ対応）
+            val baseDirectories = getBaseDirectories()
             
-            if (!targetDir.exists() || !targetDir.isDirectory) continue
+            for (baseDir in baseDirectories) {
+                if (!baseDir.exists() || !baseDir.isDirectory) continue
+                
+                println("DEBUG: Scanning base directory: ${baseDir.absolutePath}")
+                
+                val children = baseDir.listFiles() ?: continue
+                
+                for (child in children) {
+                    when {
+                        child.isDirectory -> {
+                            val folderItem = processFolderItem(child, "")
+                            if (folderItem != null) {
+                                allItems.add(folderItem)
+                            }
+                        }
+                        child.isFile && child.extension.lowercase() == "zip" -> {
+                            val zipItem = processZipFileItem(child, "")
+                            allItems.add(zipItem)
+                        }
+                    }
+                }
+            }
+        } else {
+            // 指定パスのスキャン（絶対パス対応）
+            val targetDir = File(path)
             
-            println("DEBUG: Scanning directory: ${targetDir.absolutePath}")
+            if (!targetDir.exists() || !targetDir.isDirectory) {
+                println("DEBUG: Target directory does not exist: $path")
+                return@withContext emptyList()
+            }
             
-            val children = targetDir.listFiles() ?: continue
+            println("DEBUG: Scanning specified directory: ${targetDir.absolutePath}")
+            
+            val children = targetDir.listFiles() ?: return@withContext emptyList()
             
             for (child in children) {
                 when {
@@ -262,15 +290,13 @@ class LocalFileRepository(private val context: Context) {
         }
         
         return if (hasZipFiles || hasSubfolders) {
-            val relativePath = if (path.isEmpty()) 
-                child.name 
-            else 
-                "$path/${child.name}"
+            // 絶対パスを使用
+            val absolutePath = child.absolutePath
             
             // LocalItemFactoryを使用してサムネイル等を含むFolderアイテムを作成
             localItemFactory.createFolderItem(
                 folder = child,
-                relativePath = relativePath,
+                relativePath = absolutePath, // 絶対パスに変更
                 zipCount = zipCount
             )
         } else null
@@ -280,17 +306,15 @@ class LocalFileRepository(private val context: Context) {
      * ZIPファイルアイテムを処理
      */
     private suspend fun processZipFileItem(child: File, path: String): LocalItem.ZipFile {
-        val relativePath = if (path.isEmpty()) 
-            child.name 
-        else 
-            "$path/${child.name}"
+        // 絶対パスを使用
+        val absolutePath = child.absolutePath
         
         println("DEBUG: Processing ZIP file: ${child.absolutePath}")
         
         // LocalItemFactoryを使用してサムネイル等を含むZipFileアイテムを作成
         val zipFileItem = localItemFactory.createZipFileItem(
             file = child,
-            relativePath = relativePath
+            relativePath = absolutePath // 絶対パスに変更
         )
         
         // 統一データ管理システムに総画像数を保存
