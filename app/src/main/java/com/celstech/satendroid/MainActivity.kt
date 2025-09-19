@@ -101,16 +101,13 @@ class MainActivity : ComponentActivity() {
     
     override fun onDestroy() {
         super.onDestroy()
-        // 未保存の位置をフラッシュしてからクリーンアップ
+        // リソースのクリーンアップ（SimpleReadingDataManagerは即座保存のためフラッシュ不要）
         lifecycleScope.launch {
             try {
-                directZipHandler.getUnifiedDataManager().flushPendingPositions()
+                directZipHandler.cleanup()
             } catch (e: Exception) {
-                println("DEBUG: Failed to flush pending positions: ${e.message}")
+                println("DEBUG: Failed to cleanup DirectZipImageHandler: ${e.message}")
             }
-            // リソースのクリーンアップ
-            directZipHandler.cleanup()
-            directZipHandler.getUnifiedDataManager().cleanup()
         }
     }
 }

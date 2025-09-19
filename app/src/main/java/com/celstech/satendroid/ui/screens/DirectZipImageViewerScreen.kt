@@ -55,7 +55,6 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImagePainter
 import coil.compose.rememberAsyncImagePainter
 import com.celstech.satendroid.navigation.FileNavigationManager
-import com.celstech.satendroid.utils.UnifiedReadingDataManager
 import com.celstech.satendroid.utils.SimpleReadingDataManager
 import com.celstech.satendroid.utils.DirectZipImageHandler
 import com.celstech.satendroid.utils.ZipImageEntry

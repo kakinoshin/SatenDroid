@@ -469,14 +469,8 @@ fun MainScreen() {
                                             status = statusToSave
                                         )
 
-                                        // 即座に保存（統合システムへの互換性）
-                                        directZipHandler.getUnifiedDataManager()
-                                            .saveCurrentPositionImmediately(
-                                                currentState.currentZipUri,
-                                                pagerState.currentPage,
-                                                currentState.currentZipFile
-                                            )
-
+                                        // SimpleReadingDataManagerで即座保存済み
+                                        
                                         if (isCompleted) {
                                             currentState.currentZipFile?.let { file ->
                                                 fileCompletionUpdate = file

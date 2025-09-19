@@ -4,19 +4,19 @@ import android.content.Context
 import android.os.Environment
 import com.celstech.satendroid.ui.models.LocalItem
 import com.celstech.satendroid.utils.LocalItemFactory
-import com.celstech.satendroid.utils.UnifiedReadingDataManager
+import com.celstech.satendroid.utils.SimpleReadingDataManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
  * ローカルファイル操作を担当するRepository
- * 統一データ管理システムによる読書状況管理
+ * シンプル読書データ管理システム使用
  */
 class LocalFileRepository(private val context: Context) {
 
     private val localItemFactory = LocalItemFactory(context)
-    private val unifiedDataManager = UnifiedReadingDataManager(context)
+    private val readingDataManager = SimpleReadingDataManager(context)
 
     /**
      * 指定されたパスのディレクトリをスキャンしてLocalItemリストを取得
@@ -92,9 +92,7 @@ class LocalFileRepository(private val context: Context) {
         try {
             val success = item.file.delete()
             if (success) {
-                // 統一データ管理システムで読書状況をクリア
-                unifiedDataManager.clearReadingData(item.file.absolutePath)
-                println("DEBUG: Repository cleared reading data for deleted file: ${item.name}")
+                println("DEBUG: Repository deleted file: ${item.name}")
             }
             success
         } catch (e: Exception) {
@@ -114,8 +112,6 @@ class LocalFileRepository(private val context: Context) {
             for (baseDir in baseDirectories) {
                 val folderFile = File(baseDir, item.path)
                 if (folderFile.exists() && folderFile.isDirectory) {
-                    // フォルダ内のZIPファイルの読書状況をクリア
-                    clearReadingStatusForFolder(folderFile)
                     deleted = folderFile.deleteRecursively() || deleted
                 }
             }
@@ -145,39 +141,6 @@ class LocalFileRepository(private val context: Context) {
         
         println("DEBUG: Deleted $successCount items, failed to delete $failCount items")
         Pair(successCount, failCount)
-    }
-
-
-
-    /**
-     * フォルダ内のZIPファイルの読書状況をクリア（安全版）
-     */
-    private suspend fun clearReadingStatusForFolder(folder: File) {
-        try {
-            println("DEBUG: Repository - Clearing reading status for folder: ${folder.absolutePath}")
-            
-            // フォルダー内のZIPファイルを再帰的に検索
-            val zipFiles = mutableListOf<File>()
-            folder.walk()
-                .filter { it.isFile && it.extension.lowercase() == "zip" }
-                .forEach { zipFile ->
-                    zipFiles.add(zipFile)
-                }
-            
-            println("DEBUG: Repository - Found ${zipFiles.size} ZIP files in folder")
-            
-            // 各ZIPファイルの読書データを個別にクリア
-            zipFiles.forEach { zipFile ->
-                unifiedDataManager.clearReadingData(zipFile.absolutePath)
-                println("DEBUG: Repository - Cleared reading data for: ${zipFile.name}")
-            }
-            
-            println("DEBUG: Repository - Folder reading status clear completed")
-            
-        } catch (e: Exception) {
-            println("ERROR: Repository - Failed to clear reading status for folder: ${e.message}")
-            e.printStackTrace()
-        }
     }
 
     /**
@@ -232,9 +195,9 @@ class LocalFileRepository(private val context: Context) {
             relativePath = absolutePath // 絶対パスに変更
         )
         
-        // 統一データ管理システムに総画像数を保存
+        // 読書データ管理システムに総画像数を保存
         if (zipFileItem.totalImageCount > 0) {
-            unifiedDataManager.saveTotalImages(
+            readingDataManager.saveTotalImages(
                 filePath = child.absolutePath,
                 totalImages = zipFileItem.totalImageCount
             )

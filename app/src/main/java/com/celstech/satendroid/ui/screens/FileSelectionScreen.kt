@@ -60,7 +60,7 @@ fun FileSelectionScreen(
     )
     val uiState by viewModel.uiState.collectAsState()
 
-    // 統一データ管理システムで初期化と読み込み
+    // SimpleReadingDataManagerで初期化と読み込み
     LaunchedEffect(Unit) {
         viewModel.scanDirectory(initialPath)
     }
@@ -88,7 +88,7 @@ fun FileSelectionScreen(
                 val totalImageCount = if (zipFileItem.totalImageCount > 0) {
                     zipFileItem.totalImageCount
                 } else {
-                    // UnifiedReadingDataManagerから取得を試行
+                    // SimpleReadingDataManagerから取得を試行
                     viewModel.readingDataManager.getTotalPages(file.absolutePath).takeIf { it > 0 } ?: (currentPage + 1)
                 }
                 
@@ -126,7 +126,7 @@ fun FileSelectionScreen(
                 val totalImageCount = if (zipFileItem.totalImageCount > 0) {
                     zipFileItem.totalImageCount
                 } else {
-                    // UnifiedReadingDataManagerから取得を試行
+                    // SimpleReadingDataManagerから取得を試行
                     viewModel.readingDataManager.getTotalPages(file.absolutePath).takeIf { it > 0 } ?: 1
                 }
                 

@@ -182,13 +182,12 @@ class LocalFileViewModel(
         viewModelScope.launch {
             result = repository.deleteFile(item)
             if (result) {
-                // 読書データをクリア
-                readingDataManager.clearFileData(item.file.absolutePath)
+                // メモリキャッシュをクリア（読書データは age 機能で後から削除）
                 _readingStates.remove(item.file.absolutePath)
                 
-                // ZIP Handler側も削除
+                // ZIP Handler側は削除通知のみ（データクリアなし）
                 val zipUri = item.file.toUri()
-                directZipHandler.onZipFileDeleted(zipUri, item.file)
+                println("DEBUG: File deleted: ${item.file.name}")
             }
         }
         return result
@@ -209,15 +208,13 @@ class LocalFileViewModel(
         viewModelScope.launch {
             val (successCount, failCount) = repository.deleteItems(_uiState.value.selectedItems)
 
-            // 削除されたアイテムのキャッシュをクリア
+            // 削除されたアイテムのメモリキャッシュをクリア（読書データは age 機能で後から削除）
             _uiState.value.selectedItems.forEach { item ->
                 when (item) {
                     is LocalItem.ZipFile -> {
-                        readingDataManager.clearFileData(item.file.absolutePath)
                         _readingStates.remove(item.file.absolutePath)
                         
-                        val zipUri = item.file.toUri()
-                        directZipHandler.onZipFileDeleted(zipUri, item.file)
+                        println("DEBUG: File deleted in batch: ${item.file.name}")
                     }
 
                     is LocalItem.Folder -> {
@@ -236,15 +233,13 @@ class LocalFileViewModel(
     }
 
     private fun clearCacheForFolder(folderPath: String) {
-        // フォルダー内のファイルデータをクリア（安全版）
+        // フォルダー削除時のデータクリアは不要（age機能で後から削除）
+        // メモリキャッシュのみクリア
         viewModelScope.launch {
             try {
-                println("DEBUG: Clearing cache for folder: $folderPath")
+                println("DEBUG: Clearing memory cache for folder: $folderPath")
                 
-                // SimpleReadingDataManagerでフォルダーデータクリア
-                readingDataManager.clearFolderData(folderPath)
-                
-                // メモリキャッシュからも該当ファイルを削除
+                // メモリキャッシュから該当ファイルを削除
                 val keysToRemove = _readingStates.keys.filter { filePath ->
                     filePath.contains(folderPath)
                 }
@@ -252,12 +247,12 @@ class LocalFileViewModel(
                     _readingStates.remove(key)
                 }
                 
-                // DirectZipImageHandlerでもフォルダー削除処理を実行
+                // DirectZipImageHandlerでもフォルダー削除処理を実行（メモリキャッシュのみ）
                 directZipHandler.onFolderDeleted(folderPath)
                 
-                println("DEBUG: Cache cleared for folder: $folderPath")
+                println("DEBUG: Memory cache cleared for folder: $folderPath")
             } catch (e: Exception) {
-                println("ERROR: Failed to clear cache for folder $folderPath: ${e.message}")
+                println("ERROR: Failed to clear memory cache for folder $folderPath: ${e.message}")
                 e.printStackTrace()
             }
         }
