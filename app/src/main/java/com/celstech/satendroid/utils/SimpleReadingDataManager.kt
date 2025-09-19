@@ -514,6 +514,23 @@ class SimpleReadingDataManager(private val context: Context) {
     }
 
     /**
+     * 全ての読書データを取得（設定画面での表示用）
+     */
+    fun getAllReadingData(): List<FileReadingData> {
+        val allKeys = prefs.all.keys.filter { it.startsWith(DATA_PREFIX) }
+        return allKeys.mapNotNull { key ->
+            try {
+                val jsonString = prefs.getString(key, null)
+                if (jsonString != null) {
+                    json.decodeFromString<FileReadingData>(jsonString)
+                } else null
+            } catch (e: Exception) {
+                null
+            }
+        }.sortedByDescending { it.lastAccessTime }
+    }
+
+    /**
      * 統計情報を取得
      */
     fun getStatistics(): DataStatistics {
