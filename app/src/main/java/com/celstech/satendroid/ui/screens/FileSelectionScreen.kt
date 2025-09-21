@@ -12,12 +12,18 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -26,6 +32,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -35,6 +44,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.celstech.satendroid.ui.components.DeleteFileWithPermission
 import com.celstech.satendroid.ui.components.LocalItemCard
 import com.celstech.satendroid.ui.models.LocalItem
+import com.celstech.satendroid.ui.models.ReadingFilterType
 import com.celstech.satendroid.viewmodel.LocalFileViewModel
 import java.io.File
 
@@ -77,7 +87,7 @@ fun FileSelectionScreen(
     LaunchedEffect(readingStatusUpdate) {
         readingStatusUpdate?.let { (file, currentPage) ->
             println("DEBUG: FileSelectionScreen - Updating reading status for ${file.name} at page ${currentPage + 1}")
-            
+
             // ファイルパスからLocalItem.ZipFileを検索
             val zipFileItem = uiState.localItems.find { item ->
                 item is LocalItem.ZipFile && item.file.absolutePath == file.absolutePath
@@ -89,24 +99,29 @@ fun FileSelectionScreen(
                     zipFileItem.totalImageCount
                 } else {
                     // SimpleReadingDataManagerから取得を試行
-                    viewModel.readingDataManager.getTotalPages(file.absolutePath).takeIf { it > 0 } ?: (currentPage + 1)
+                    viewModel.readingDataManager.getTotalPages(file.absolutePath).takeIf { it > 0 }
+                        ?: (currentPage + 1)
                 }
-                
+
                 // totalImageCountが正しくない場合は更新
                 if (zipFileItem.totalImageCount != totalImageCount) {
                     // LocalItem.ZipFileを更新（immutableなので新しいインスタンスを作成）
                     val updatedZipFile = zipFileItem.copy(totalImageCount = totalImageCount)
-                    
+
                     // ViewModelに更新を通知
                     viewModel.updateReadingStatus(updatedZipFile, currentPage)
                 } else {
                     viewModel.updateReadingStatus(zipFileItem, currentPage)
                 }
-                
+
                 println("DEBUG: Reading status updated successfully - Total images: $totalImageCount")
             } else {
                 println("DEBUG: Could not find LocalItem.ZipFile for ${file.name}")
-                println("DEBUG: Available items: ${uiState.localItems.filterIsInstance<LocalItem.ZipFile>().map { it.name }}")
+                println(
+                    "DEBUG: Available items: ${
+                        uiState.localItems.filterIsInstance<LocalItem.ZipFile>().map { it.name }
+                    }"
+                )
             }
         }
     }
@@ -115,7 +130,7 @@ fun FileSelectionScreen(
     LaunchedEffect(fileCompletionUpdate) {
         fileCompletionUpdate?.let { file ->
             println("DEBUG: FileSelectionScreen - Marking file as completed: ${file.name}")
-            
+
             // ファイルパスからLocalItem.ZipFileを検索
             val zipFileItem = uiState.localItems.find { item ->
                 item is LocalItem.ZipFile && item.file.absolutePath == file.absolutePath
@@ -127,12 +142,13 @@ fun FileSelectionScreen(
                     zipFileItem.totalImageCount
                 } else {
                     // SimpleReadingDataManagerから取得を試行
-                    viewModel.readingDataManager.getTotalPages(file.absolutePath).takeIf { it > 0 } ?: 1
+                    viewModel.readingDataManager.getTotalPages(file.absolutePath).takeIf { it > 0 }
+                        ?: 1
                 }
-                
+
                 // 最後のページまで読んだとして既読にマーク
                 val lastPage = if (totalImageCount > 0) totalImageCount - 1 else 0
-                
+
                 // totalImageCountが正しくない場合は更新
                 if (zipFileItem.totalImageCount != totalImageCount) {
                     val updatedZipFile = zipFileItem.copy(totalImageCount = totalImageCount)
@@ -140,11 +156,15 @@ fun FileSelectionScreen(
                 } else {
                     viewModel.updateReadingStatus(zipFileItem, lastPage)
                 }
-                
+
                 println("DEBUG: File marked as completed successfully - Total images: $totalImageCount, Last page: $lastPage")
             } else {
                 println("DEBUG: Could not find LocalItem.ZipFile for completion marking: ${file.name}")
-                println("DEBUG: Available items: ${uiState.localItems.filterIsInstance<LocalItem.ZipFile>().map { it.name }}")
+                println(
+                    "DEBUG: Available items: ${
+                        uiState.localItems.filterIsInstance<LocalItem.ZipFile>().map { it.name }
+                    }"
+                )
             }
         }
     }
@@ -214,6 +234,105 @@ fun FileSelectionScreen(
 
         Spacer(modifier = Modifier.height(24.dp))
 
+        // Compact Filter UI - Only show when files exist
+        if (uiState.localItems.isNotEmpty()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Filter display
+                val filterDisplayText = when (uiState.filterType) {
+                    ReadingFilterType.ALL -> "すべて"
+                    ReadingFilterType.HIDE_COMPLETED -> "既読を非表示"
+                    ReadingFilterType.UNREAD -> "未読のみ"
+                    ReadingFilterType.READING -> "読書中のみ"
+                    ReadingFilterType.COMPLETED -> "既読のみ"
+                }
+
+                Text(
+                    text = "📁 フィルター: $filterDisplayText",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+
+                // Filter menu
+                var showFilterMenu by remember { mutableStateOf(false) }
+
+                Box {
+                    IconButton(onClick = { showFilterMenu = true }) {
+                        Icon(
+                            imageVector = Icons.Default.FilterList,
+                            contentDescription = "フィルター",
+                            tint = if (uiState.filterType != ReadingFilterType.ALL) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            }
+                        )
+                    }
+
+                    DropdownMenu(
+                        expanded = showFilterMenu,
+                        onDismissRequest = { showFilterMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("すべて") },
+                            onClick = {
+                                viewModel.setReadingFilter(ReadingFilterType.ALL)
+                                showFilterMenu = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("既読を非表示") },
+                            onClick = {
+                                viewModel.setReadingFilter(ReadingFilterType.HIDE_COMPLETED)
+                                showFilterMenu = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("未読のみ") },
+                            onClick = {
+                                viewModel.setReadingFilter(ReadingFilterType.UNREAD)
+                                showFilterMenu = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("読書中のみ") },
+                            onClick = {
+                                viewModel.setReadingFilter(ReadingFilterType.READING)
+                                showFilterMenu = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("既読のみ") },
+                            onClick = {
+                                viewModel.setReadingFilter(ReadingFilterType.COMPLETED)
+                                showFilterMenu = false
+                            }
+                        )
+                    }
+                }
+            }
+
+            // Display count (compact)
+            if (uiState.filterType != ReadingFilterType.ALL) {
+                val displayItems = viewModel.getDisplayItems()
+                val zipFileCount = displayItems.filterIsInstance<LocalItem.ZipFile>().size
+                val totalZipFileCount =
+                    uiState.localItems.filterIsInstance<LocalItem.ZipFile>().size
+
+                Text(
+                    text = "📊 表示中: $zipFileCount/$totalZipFileCount ファイル",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
         // Navigation bar
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -237,11 +356,13 @@ fun FileSelectionScreen(
 
                     Spacer(modifier = Modifier.weight(1f))
 
-                    if (uiState.selectedItems.size == uiState.localItems.size && uiState.localItems.isNotEmpty()) {
+                    if (uiState.selectedItems.size == viewModel.getDisplayItems().size && viewModel.getDisplayItems()
+                            .isNotEmpty()
+                    ) {
                         TextButton(onClick = { viewModel.deselectAll() }) {
                             Text("Deselect All")
                         }
-                    } else if (uiState.localItems.isNotEmpty()) {
+                    } else if (viewModel.getDisplayItems().isNotEmpty()) {
                         TextButton(onClick = { viewModel.selectAll() }) {
                             Text("Select All")
                         }
@@ -323,87 +444,118 @@ fun FileSelectionScreen(
                 }
             }
 
-            uiState.localItems.isEmpty() -> {
-                Card(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Text(
-                            text = "📁",
-                            style = MaterialTheme.typography.displayLarge,
-                            modifier = Modifier.padding(bottom = 16.dp)
-                        )
-
-                        Text(
-                            text = if (uiState.currentPath.isEmpty()) "No ZIP files found" else "Empty folder",
-                            style = MaterialTheme.typography.titleMedium,
-                            textAlign = TextAlign.Center
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Text(
-                            text = if (uiState.currentPath.isEmpty())
-                                "Download ZIP files from Dropbox or select from your device to get started"
-                            else
-                                "This folder doesn't contain any ZIP files",
-                            style = MaterialTheme.typography.bodyMedium,
-                            textAlign = TextAlign.Center,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                        )
-                    }
-                }
-            }
-
             else -> {
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(
-                        items = uiState.localItems,
-                        key = { item -> item.path }
-                    ) { item ->
-                        LocalItemCard(
-                            item = item,
-                            viewModel = viewModel,
-                            isSelected = uiState.selectedItems.contains(item),
-                            isSelectionMode = uiState.isSelectionMode,
-                            onClick = {
-                                if (uiState.isSelectionMode) {
-                                    viewModel.toggleItemSelection(item)
-                                } else {
-                                    when (item) {
-                                        is LocalItem.Folder -> viewModel.navigateToFolder(item.path)
-                                        is LocalItem.ZipFile -> {
-                                            // ZIPファイルを開く前に読書状態を更新
-                                            viewModel.onZipFileOpened(item)
-                                            onFileSelected(item.file)
-                                        }
+                val displayItems = viewModel.getDisplayItems()
+
+                when {
+                    displayItems.isEmpty() -> {
+                        Card(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Text(
+                                    text = "📁",
+                                    style = MaterialTheme.typography.displayLarge,
+                                    modifier = Modifier.padding(bottom = 16.dp)
+                                )
+
+                                val emptyMessage = when (uiState.filterType) {
+                                    ReadingFilterType.ALL -> {
+                                        if (uiState.currentPath.isEmpty()) "No ZIP files found" else "Empty folder"
                                     }
+
+                                    ReadingFilterType.UNREAD -> "未読のファイルがありません"
+                                    ReadingFilterType.READING -> "読書中のファイルがありません"
+                                    ReadingFilterType.COMPLETED -> "既読のファイルがありません"
+                                    ReadingFilterType.HIDE_COMPLETED -> "表示できるファイルがありません（既読を除く）"
                                 }
-                            },
-                            onLongClick = {
-                                if (!uiState.isSelectionMode) {
-                                    viewModel.enterSelectionMode(item)
+
+                                Text(
+                                    text = emptyMessage,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    textAlign = TextAlign.Center
+                                )
+
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                val emptyDescription = when (uiState.filterType) {
+                                    ReadingFilterType.ALL -> {
+                                        if (uiState.currentPath.isEmpty())
+                                            "Download ZIP files from Dropbox or select from your device to get started"
+                                        else
+                                            "This folder doesn't contain any ZIP files"
+                                    }
+
+                                    ReadingFilterType.UNREAD -> "すべてのファイルが読書済みまたは読書中です"
+                                    ReadingFilterType.READING -> "現在読書中のファイルがありません"
+                                    ReadingFilterType.COMPLETED -> "まだ読了したファイルがありません"
+                                    ReadingFilterType.HIDE_COMPLETED -> "未読・読書中のファイルがありません"
                                 }
-                            },
-                            onDeleteClick = {
-                                viewModel.setItemToDelete(item)
-                                viewModel.setShowDeleteConfirmDialog(true)
+
+                                Text(
+                                    text = emptyDescription,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    textAlign = TextAlign.Center,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                                )
                             }
-                        )
+                        }
+                    }
+
+                    else -> {
+                        LazyColumn(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(
+                                items = displayItems,
+                                key = { item -> item.path }
+                            ) { item ->
+                                LocalItemCard(
+                                    item = item,
+                                    viewModel = viewModel,
+                                    isSelected = uiState.selectedItems.contains(item),
+                                    isSelectionMode = uiState.isSelectionMode,
+                                    onClick = {
+                                        if (uiState.isSelectionMode) {
+                                            viewModel.toggleItemSelection(item)
+                                        } else {
+                                            when (item) {
+                                                is LocalItem.Folder -> viewModel.navigateToFolder(
+                                                    item.path
+                                                )
+
+                                                is LocalItem.ZipFile -> {
+                                                    // ZIPファイルを開く前に読書状態を更新
+                                                    viewModel.onZipFileOpened(item)
+                                                    onFileSelected(item.file)
+                                                }
+                                            }
+                                        }
+                                    },
+                                    onLongClick = {
+                                        if (!uiState.isSelectionMode) {
+                                            viewModel.enterSelectionMode(item)
+                                        }
+                                    },
+                                    onDeleteClick = {
+                                        viewModel.setItemToDelete(item)
+                                        viewModel.setShowDeleteConfirmDialog(true)
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
             }

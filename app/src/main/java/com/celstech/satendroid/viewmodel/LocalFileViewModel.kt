@@ -1,7 +1,6 @@
 package com.celstech.satendroid.viewmodel
 
 import android.content.Context
-import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -11,6 +10,8 @@ import com.celstech.satendroid.repository.LocalFileRepository
 import com.celstech.satendroid.selection.SelectionManager
 import com.celstech.satendroid.ui.models.LocalFileUiState
 import com.celstech.satendroid.ui.models.LocalItem
+import com.celstech.satendroid.ui.models.ReadingFilterType
+import com.celstech.satendroid.ui.models.ReadingStatus
 import com.celstech.satendroid.utils.DirectZipImageHandler
 import com.celstech.satendroid.utils.SimpleReadingDataManager
 import com.celstech.satendroid.utils.ReadingProgress
@@ -20,11 +21,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.snapshots.SnapshotStateMap
-import java.io.File
 
 /**
  * ローカルファイル管理のViewModel（シンプル化版）
- * 
+ *
  * 変更点:
  * - SimpleReadingDataManagerを使用
  * - 単一キャッシュレイヤー
@@ -67,6 +67,76 @@ class LocalFileViewModel(
      */
     fun getReadingProgress(filePath: String): ReadingProgress {
         return _readingStates[filePath] ?: readingDataManager.getReadingProgress(filePath)
+    }
+
+    // Filter functionality
+    /**
+     * 読書状態フィルターを設定
+     */
+    fun setReadingFilter(filterType: ReadingFilterType) {
+        val currentState = _uiState.value
+        val newFilteredItems = applyReadingFilter(currentState.localItems, filterType)
+
+        _uiState.value = currentState.copy(
+            filterType = filterType,
+            filteredLocalItems = newFilteredItems,
+            // フィルター変更時にセレクションモードをリセット
+            isSelectionMode = false,
+            selectedItems = emptySet()
+        )
+
+        println("DEBUG: Filter applied - Type: $filterType, Items: ${newFilteredItems.size}/${currentState.localItems.size}")
+    }
+
+    /**
+     * フィルターロジックの適用
+     */
+    private fun applyReadingFilter(
+        items: List<LocalItem>,
+        filterType: ReadingFilterType
+    ): List<LocalItem> {
+        return when (filterType) {
+            ReadingFilterType.ALL -> items
+            ReadingFilterType.UNREAD -> items.filter { item ->
+                if (item is LocalItem.ZipFile) {
+                    val progress = getReadingProgress(item.file.absolutePath)
+                    progress.status == ReadingStatus.UNREAD
+                } else true // フォルダは常に表示
+            }
+
+            ReadingFilterType.READING -> items.filter { item ->
+                if (item is LocalItem.ZipFile) {
+                    val progress = getReadingProgress(item.file.absolutePath)
+                    progress.status == ReadingStatus.READING
+                } else false // フォルダは非表示
+            }
+
+            ReadingFilterType.COMPLETED -> items.filter { item ->
+                if (item is LocalItem.ZipFile) {
+                    val progress = getReadingProgress(item.file.absolutePath)
+                    progress.status == ReadingStatus.COMPLETED
+                } else false // フォルダは非表示
+            }
+
+            ReadingFilterType.HIDE_COMPLETED -> items.filter { item ->
+                if (item is LocalItem.ZipFile) {
+                    val progress = getReadingProgress(item.file.absolutePath)
+                    progress.status != ReadingStatus.COMPLETED // 既読以外を表示
+                } else true // フォルダは常に表示
+            }
+        }
+    }
+
+    /**
+     * 現在表示中のアイテムリストを取得（フィルター適用済み）
+     */
+    fun getDisplayItems(): List<LocalItem> {
+        val currentState = _uiState.value
+        return if (currentState.filterType == ReadingFilterType.ALL) {
+            currentState.localItems
+        } else {
+            currentState.filteredLocalItems
+        }
     }
 
     // Navigation
@@ -133,7 +203,8 @@ class LocalFileViewModel(
     }
 
     fun selectAll() {
-        val newSelectedItems = selectionManager.selectAll(_uiState.value.localItems)
+        val displayItems = getDisplayItems()
+        val newSelectedItems = selectionManager.selectAll(displayItems)
         _uiState.value = _uiState.value.copy(selectedItems = newSelectedItems)
     }
 
@@ -143,10 +214,10 @@ class LocalFileViewModel(
     }
 
     fun getSelectionStatus(): SelectionManager.SelectionStatus {
-        val currentState = _uiState.value
+        val displayItems = getDisplayItems()
         return selectionManager.getSelectionStatus(
-            currentState.selectedItems,
-            currentState.localItems
+            _uiState.value.selectedItems,
+            displayItems
         )
     }
 
@@ -166,6 +237,13 @@ class LocalFileViewModel(
                 // メモリキャッシュに読書状態を読み込み
                 loadReadingStatesForFiles(items)
 
+                // 現在のフィルターを再適用
+                val currentFilter = _uiState.value.filterType
+                if (currentFilter != ReadingFilterType.ALL) {
+                    val filteredItems = applyReadingFilter(items, currentFilter)
+                    _uiState.value = _uiState.value.copy(filteredLocalItems = filteredItems)
+                }
+
                 println("DEBUG: Found ${items.size} items in path '$path'")
 
             } catch (e: Exception) {
@@ -184,9 +262,7 @@ class LocalFileViewModel(
             if (result) {
                 // メモリキャッシュをクリア（読書データは age 機能で後から削除）
                 _readingStates.remove(item.file.absolutePath)
-                
-                // ZIP Handler側は削除通知のみ（データクリアなし）
-                val zipUri = item.file.toUri()
+
                 println("DEBUG: File deleted: ${item.file.name}")
             }
         }
@@ -214,14 +290,14 @@ class LocalFileViewModel(
 
     fun deleteSelectedItems() {
         viewModelScope.launch {
-            val (successCount, failCount) = repository.deleteItems(_uiState.value.selectedItems)
+            repository.deleteItems(_uiState.value.selectedItems)
 
             // 削除されたアイテムのメモリキャッシュをクリア（読書データは age 機能で後から削除）
             _uiState.value.selectedItems.forEach { item ->
                 when (item) {
                     is LocalItem.ZipFile -> {
                         _readingStates.remove(item.file.absolutePath)
-                        
+
                         println("DEBUG: File deleted in batch: ${item.file.name}")
                     }
 
@@ -246,7 +322,7 @@ class LocalFileViewModel(
         viewModelScope.launch {
             try {
                 println("DEBUG: Clearing memory cache for folder: $folderPath")
-                
+
                 // メモリキャッシュから該当ファイルを削除
                 val keysToRemove = _readingStates.keys.filter { filePath ->
                     filePath.contains(folderPath)
@@ -254,10 +330,10 @@ class LocalFileViewModel(
                 keysToRemove.forEach { key ->
                     _readingStates.remove(key)
                 }
-                
+
                 // DirectZipImageHandlerでもフォルダー削除処理を実行（メモリキャッシュのみ）
                 directZipHandler.onFolderDeleted(folderPath)
-                
+
                 println("DEBUG: Memory cache cleared for folder: $folderPath")
             } catch (e: Exception) {
                 println("ERROR: Failed to clear memory cache for folder $folderPath: ${e.message}")
@@ -287,7 +363,7 @@ class LocalFileViewModel(
                 println("DEBUG: File: ${zipFile.name}")
                 println("DEBUG: Current Index: $currentIndex")
                 println("DEBUG: Total Images: ${zipFile.totalImageCount}")
-                
+
                 // 即座保存（バッチ処理なし）
                 readingDataManager.saveReadingData(
                     filePath = zipFile.file.absolutePath,
@@ -298,6 +374,14 @@ class LocalFileViewModel(
                 // メモリキャッシュ更新
                 val newProgress = readingDataManager.getReadingProgress(zipFile.file.absolutePath)
                 _readingStates[zipFile.file.absolutePath] = newProgress
+
+                // フィルターが適用されている場合は再適用
+                val currentState = _uiState.value
+                if (currentState.filterType != ReadingFilterType.ALL) {
+                    val filteredItems =
+                        applyReadingFilter(currentState.localItems, currentState.filterType)
+                    _uiState.value = currentState.copy(filteredLocalItems = filteredItems)
+                }
 
                 println("DEBUG: Updated - Status: ${newProgress.status}, Position: ${newProgress.currentIndex}")
                 println("=== ViewModel.updateReadingStatus END ===")
@@ -335,6 +419,14 @@ class LocalFileViewModel(
                 // メモリキャッシュ更新
                 val newProgress = readingDataManager.getReadingProgress(zipFile.file.absolutePath)
                 _readingStates[zipFile.file.absolutePath] = newProgress
+
+                // フィルターが適用されている場合は再適用
+                val currentState = _uiState.value
+                if (currentState.filterType != ReadingFilterType.ALL) {
+                    val filteredItems =
+                        applyReadingFilter(currentState.localItems, currentState.filterType)
+                    _uiState.value = currentState.copy(filteredLocalItems = filteredItems)
+                }
 
                 println("DEBUG: File opened - Status: ${newProgress.status}")
 

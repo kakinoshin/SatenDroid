@@ -16,9 +16,20 @@ enum class ReadingStatus {
     COMPLETED   // 既読（最後まで見た）
 }
 
+// 読書状態フィルターのタイプ
+@Serializable
+enum class ReadingFilterType {
+    ALL,             // すべて
+    UNREAD,          // 未読のみ
+    READING,         // 読書中のみ 
+    COMPLETED,       // 既読のみ
+    HIDE_COMPLETED   // 既読を非表示（未読+読書中）
+}
+
 // UI State
 data class LocalFileUiState(
     val localItems: List<LocalItem> = emptyList(),
+    val filteredLocalItems: List<LocalItem> = emptyList(),
     val isRefreshing: Boolean = false,
     val currentPath: String = "",
     val pathHistory: List<String> = emptyList(),
@@ -26,7 +37,8 @@ data class LocalFileUiState(
     val selectedItems: Set<LocalItem> = emptySet(),
     val showDeleteConfirmDialog: Boolean = false,
     val itemToDelete: LocalItem? = null,
-    val showDeleteZipWithPermissionDialog: Boolean = false
+    val showDeleteZipWithPermissionDialog: Boolean = false,
+    val filterType: ReadingFilterType = ReadingFilterType.ALL
 )
 
 // Data models
@@ -34,14 +46,14 @@ sealed class LocalItem {
     abstract val name: String
     abstract val path: String
     abstract val lastModified: Long
-    
+
     data class Folder(
         override val name: String,
         override val path: String,
         override val lastModified: Long,
         val zipCount: Int = 0
     ) : LocalItem()
-    
+
     data class ZipFile(
         override val name: String,
         override val path: String,
@@ -65,22 +77,23 @@ object FileNameUtils {
      */
     fun truncateFileName(fileName: String, maxLength: Int = 30): String {
         if (fileName.length <= maxLength) return fileName
-        
+
         // 拡張子を取得
         val extension = fileName.substringAfterLast('.', "")
         val nameWithoutExtension = fileName.substringBeforeLast('.')
-        
+
         // 拡張子も含めた場合の調整
-        val availableLength = maxLength - (if (extension.isNotEmpty()) extension.length + 1 else 0) - 3 // "..."分を引く
-        
+        val availableLength =
+            maxLength - (if (extension.isNotEmpty()) extension.length + 1 else 0) - 3 // "..."分を引く
+
         if (availableLength <= 0) return fileName
-        
+
         val frontLength = availableLength / 2
         val backLength = availableLength - frontLength
-        
+
         val front = nameWithoutExtension.take(frontLength)
         val back = nameWithoutExtension.takeLast(backLength)
-        
+
         return if (extension.isNotEmpty()) {
             "$front...$back.$extension"
         } else {
