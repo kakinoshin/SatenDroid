@@ -207,14 +207,9 @@ fun DropboxScreen(
                     File(appDownloadsDir, "SatenDroid")
                 }
 
-                // バッチダウンロード用サブフォルダの作成
-                val batchDownloadDir = if (currentLocalPath.isNotEmpty()) {
-                    // 現在のローカルパスが設定されている場合、そこに直接ダウンロード
-                    baseDownloadDir
-                } else {
-                    // ルートの場合はフォルダ名でサブディレクトリを作成
-                    File(baseDownloadDir, folderName)
-                }
+                // バッチダウンロード用サブフォルダの作成（統一処理）
+                // 常にDropboxフォルダー名でサブディレクトリを作成してフォルダー構造を保持
+                val batchDownloadDir = File(baseDownloadDir, folderName)
 
                 println("DEBUG: Base download directory: ${baseDownloadDir.absolutePath}")
                 println("DEBUG: Batch download directory: ${batchDownloadDir.absolutePath}")
@@ -230,8 +225,8 @@ fun DropboxScreen(
                     }
                 }
 
-                // Create batch download directory if different from base
-                if (batchDownloadDir != baseDownloadDir && !batchDownloadDir.exists()) {
+                // Create batch download directory (統一処理で常に作成)
+                if (!batchDownloadDir.exists()) {
                     val created = batchDownloadDir.mkdirs()
                     println("DEBUG: Batch directory creation result: $created")
                     println("DEBUG: Batch directory path: ${batchDownloadDir.absolutePath}")
@@ -317,7 +312,7 @@ fun DropboxScreen(
                 }
 
                 val downloadLocationText = if (currentLocalPath.isNotEmpty()) {
-                    "current folder"
+                    "current folder/${folderName}"
                 } else {
                     "SatenDroid/${folderName}"
                 }
@@ -550,21 +545,21 @@ fun DropboxScreen(
                                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                                     )
 
-                                    // Download destination info
+                                    // Download destination info (統一表示)
                                     if (currentLocalPath.isNotEmpty()) {
                                         Text(
                                             text = "📥 Downloads to: ${
                                                 currentLocalPath.substringAfterLast(
                                                     "/"
                                                 )
-                                            }",
+                                            }/[folder_name]",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.primary,
                                             modifier = Modifier.padding(top = 4.dp)
                                         )
                                     } else {
                                         Text(
-                                            text = "📥 Downloads to: SatenDroid folder",
+                                            text = "📥 Downloads to: SatenDroid/[folder_name]",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.primary,
                                             modifier = Modifier.padding(top = 4.dp)
