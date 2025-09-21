@@ -117,10 +117,12 @@ fun DropboxScreen(
                 withContext(Dispatchers.IO) {
                     val downloader = client.files().download(item.path)
 
-                    // Custom output stream that tracks progress
-                    val outputStream = localFile.outputStream()
-                    val buffer = ByteArray(8192)
+                    // Use BufferedOutputStream with 64KB buffer for efficient disk I/O
+                    val outputStream = java.io.BufferedOutputStream(localFile.outputStream(), 65536)
+                    val buffer = ByteArray(65536) // 64KB buffer for better network performance
                     var bytesDownloaded = 0L
+                    var lastUpdateTime = 0L
+                    val updateInterval = 500L // Update UI every 500ms to reduce overhead
 
                     val inputStream = downloader.inputStream
 
@@ -130,22 +132,38 @@ fun DropboxScreen(
                             outputStream.write(buffer, 0, bytesRead)
                             bytesDownloaded += bytesRead
 
-                            // Update progress on main thread
-                            withContext(Dispatchers.Main) {
-                                val currentTime = System.currentTimeMillis()
-                                val elapsedTime = (currentTime - startTime) / 1000.0 // seconds
-                                val speed =
-                                    if (elapsedTime > 0) bytesDownloaded / elapsedTime else 0.0
-                                val remaining =
-                                    if (speed > 0) (item.size - bytesDownloaded) / speed else 0.0
+                            // Update progress on main thread with throttling
+                            val currentTime = System.currentTimeMillis()
+                            if (currentTime - lastUpdateTime > updateInterval) {
+                                withContext(Dispatchers.Main) {
+                                    val elapsedTime = (currentTime - startTime) / 1000.0 // seconds
+                                    val speed =
+                                        if (elapsedTime > 0) bytesDownloaded / elapsedTime else 0.0
+                                    val remaining =
+                                        if (speed > 0) (item.size - bytesDownloaded) / speed else 0.0
 
-                                downloadProgress = downloadProgress.copy(
-                                    currentFileProgress = bytesDownloaded.toFloat() / item.size.toFloat(),
-                                    bytesDownloaded = bytesDownloaded,
-                                    downloadSpeed = FormatUtils.formatSpeed(speed),
-                                    estimatedTimeRemaining = FormatUtils.formatTime(remaining)
-                                )
+                                    downloadProgress = downloadProgress.copy(
+                                        currentFileProgress = bytesDownloaded.toFloat() / item.size.toFloat(),
+                                        bytesDownloaded = bytesDownloaded,
+                                        downloadSpeed = FormatUtils.formatSpeed(speed),
+                                        estimatedTimeRemaining = FormatUtils.formatTime(remaining)
+                                    )
+                                }
+                                lastUpdateTime = currentTime
                             }
+                        }
+                        
+                        // Final progress update to ensure 100% completion is shown
+                        withContext(Dispatchers.Main) {
+                            val elapsedTime = (System.currentTimeMillis() - startTime) / 1000.0
+                            val speed = if (elapsedTime > 0) bytesDownloaded / elapsedTime else 0.0
+
+                            downloadProgress = downloadProgress.copy(
+                                currentFileProgress = 1.0f,
+                                bytesDownloaded = bytesDownloaded,
+                                downloadSpeed = FormatUtils.formatSpeed(speed),
+                                estimatedTimeRemaining = "Complete"
+                            )
                         }
                     } finally {
                         inputStream.close()
@@ -255,10 +273,12 @@ fun DropboxScreen(
                         withContext(Dispatchers.IO) {
                             val downloader = client.files().download(zipFile.path)
 
-                            // Custom output stream that tracks progress
-                            val outputStream = localFile.outputStream()
-                            val buffer = ByteArray(8192)
+                            // Use BufferedOutputStream with 64KB buffer for efficient disk I/O
+                            val outputStream = java.io.BufferedOutputStream(localFile.outputStream(), 65536)
+                            val buffer = ByteArray(65536) // 64KB buffer for better network performance
                             var fileBytesDownloaded = 0L
+                            var lastUpdateTime = 0L
+                            val updateInterval = 500L // Update UI every 500ms to reduce overhead
 
                             val inputStream = downloader.inputStream
 
@@ -269,25 +289,33 @@ fun DropboxScreen(
                                     fileBytesDownloaded += bytesRead
                                     totalBytesDownloaded += bytesRead
 
-                                    // Update progress on main thread
-                                    withContext(Dispatchers.Main) {
-                                        val currentTime = System.currentTimeMillis()
-                                        val elapsedTime =
-                                            (currentTime - startTime) / 1000.0 // seconds
-                                        val speed =
-                                            if (elapsedTime > 0) totalBytesDownloaded / elapsedTime else 0.0
-                                        val remaining =
-                                            if (speed > 0) (totalBytes - totalBytesDownloaded) / speed else 0.0
+                                    // Update progress on main thread with throttling
+                                    val currentTime = System.currentTimeMillis()
+                                    if (currentTime - lastUpdateTime > updateInterval) {
+                                        withContext(Dispatchers.Main) {
+                                            val elapsedTime = (currentTime - startTime) / 1000.0 // seconds
+                                            val speed =
+                                                if (elapsedTime > 0) totalBytesDownloaded / elapsedTime else 0.0
+                                            val remaining =
+                                                if (speed > 0) (totalBytes - totalBytesDownloaded) / speed else 0.0
 
-                                        downloadProgress = downloadProgress.copy(
-                                            currentFileProgress = fileBytesDownloaded.toFloat() / zipFile.size.toFloat(),
-                                            bytesDownloaded = totalBytesDownloaded,
-                                            downloadSpeed = FormatUtils.formatSpeed(speed),
-                                            estimatedTimeRemaining = FormatUtils.formatTime(
-                                                remaining
+                                            downloadProgress = downloadProgress.copy(
+                                                currentFileProgress = fileBytesDownloaded.toFloat() / zipFile.size.toFloat(),
+                                                bytesDownloaded = totalBytesDownloaded,
+                                                downloadSpeed = FormatUtils.formatSpeed(speed),
+                                                estimatedTimeRemaining = FormatUtils.formatTime(remaining)
                                             )
-                                        )
+                                        }
+                                        lastUpdateTime = currentTime
                                     }
+                                }
+                                
+                                // Final progress update for current file completion
+                                withContext(Dispatchers.Main) {
+                                    downloadProgress = downloadProgress.copy(
+                                        currentFileProgress = 1.0f,
+                                        bytesDownloaded = totalBytesDownloaded
+                                    )
                                 }
                             } finally {
                                 inputStream.close()
