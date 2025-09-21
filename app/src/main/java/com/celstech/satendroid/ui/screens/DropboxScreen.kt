@@ -36,7 +36,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.celstech.satendroid.LocalDownloadQueueManager
+import com.celstech.satendroid.download.manager.DownloadServiceManager
 import com.celstech.satendroid.dropbox.DropboxAuthManager
 import com.celstech.satendroid.dropbox.DropboxAuthState
 import com.celstech.satendroid.ui.models.CloudType
@@ -49,7 +49,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * Dropbox画面 - 完全キューシステム統合版
+ * Dropbox画面 - DownloadServiceManager統合版
  */
 @Composable
 fun DropboxScreen(
@@ -62,7 +62,6 @@ fun DropboxScreen(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val authState by dropboxAuthManager.authState.collectAsState()
-    val downloadQueueManager = LocalDownloadQueueManager.current
 
     // State for file browsing
     var dropboxItems by remember { mutableStateOf<List<DropboxItem>>(emptyList()) }
@@ -71,8 +70,27 @@ fun DropboxScreen(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var downloadMessage by remember { mutableStateOf<String?>(null) }
 
-    // キューの状態を監視
-    val queueState by downloadQueueManager.queueState.collectAsState()
+    // DownloadServiceManagerの状態を監視
+    val isServiceConnected by DownloadServiceManager.isServiceConnected.collectAsState()
+    
+    // キューの状態を監視（サービス接続後に取得）
+    var queueState by remember { mutableStateOf(com.celstech.satendroid.ui.models.DownloadQueueState()) }
+    
+    // サービス接続後にキューの状態を監視開始
+    LaunchedEffect(isServiceConnected) {
+        if (isServiceConnected) {
+            try {
+                val queueManager = DownloadServiceManager.getQueueManager(context)
+                launch {
+                    queueManager.queueState.collect { state ->
+                        queueState = state
+                    }
+                }
+            } catch (e: Exception) {
+                println("DEBUG: Failed to get queue manager: ${e.message}")
+            }
+        }
+    }
 
     // Function to add single file to download queue
     fun addToDownloadQueue(item: DropboxItem.ZipFile) {
@@ -97,8 +115,8 @@ fun DropboxScreen(
                     fileSize = item.size
                 )
 
-                // キューに追加
-                downloadQueueManager.enqueueDownload(downloadRequest)
+                // DownloadServiceManager経由でキューに追加
+                DownloadServiceManager.enqueueDownload(context, downloadRequest)
 
                 val downloadLocationText = if (currentLocalPath.isNotEmpty()) {
                     "current folder"
@@ -155,7 +173,7 @@ fun DropboxScreen(
                             fileSize = zipFile.size
                         )
 
-                        downloadQueueManager.enqueueDownload(downloadRequest)
+                        DownloadServiceManager.enqueueDownload(context, downloadRequest)
                         addedCount++
                         println("DEBUG: Added ${zipFile.name} to download queue")
 

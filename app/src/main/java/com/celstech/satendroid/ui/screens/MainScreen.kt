@@ -33,7 +33,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.celstech.satendroid.LocalDropboxAuthManager
-import com.celstech.satendroid.LocalDownloadQueueManager
 import com.celstech.satendroid.navigation.FileNavigationManager
 import com.celstech.satendroid.ui.models.ViewState
 import com.celstech.satendroid.ui.models.ImageViewerState
@@ -638,7 +637,6 @@ fun MainScreen() {
 
         is ViewState.DownloadQueue -> {
             DownloadQueueScreen(
-                downloadQueueManager = LocalDownloadQueueManager.current,
                 onDismiss = {
                     currentView = ViewState.LocalFileList
                 }

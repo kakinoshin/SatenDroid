@@ -28,34 +28,67 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.celstech.satendroid.download.manager.DownloadQueueManager
+import com.celstech.satendroid.download.manager.DownloadServiceManager
 import com.celstech.satendroid.ui.components.DownloadProgressCard
 import com.celstech.satendroid.ui.models.DownloadStatus
 import com.celstech.satendroid.utils.FormatUtils
 import kotlinx.coroutines.launch
 
 /**
- * ダウンロードキュー管理画面
+ * ダウンロードキュー管理画面 - DownloadServiceManager統合版
  */
 @Composable
 fun DownloadQueueScreen(
-    downloadQueueManager: DownloadQueueManager,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     
+    // DownloadServiceManagerの状態を監視
+    val isServiceConnected by DownloadServiceManager.isServiceConnected.collectAsState()
+    
     // ダウンロードの状態を監視
-    val queueState by downloadQueueManager.queueState.collectAsState()
-    val downloadProgress by downloadQueueManager.downloadProgress.collectAsState()
+    var queueState by remember { mutableStateOf(com.celstech.satendroid.ui.models.DownloadQueueState()) }
+    var downloadProgress by remember { mutableStateOf<Map<String, com.celstech.satendroid.ui.models.DownloadProgressInfo>>(emptyMap()) }
+    
+    // サービス接続後にキューの状態を監視開始
+    LaunchedEffect(isServiceConnected) {
+        if (isServiceConnected) {
+            try {
+                val queueManager = DownloadServiceManager.getQueueManager(context)
+                
+                // キューの状態を監視
+                launch {
+                    queueManager.queueState.collect { state ->
+                        queueState = state
+                    }
+                }
+                
+                // ダウンロード進捗を監視
+                launch {
+                    queueManager.downloadProgress.collect { progress ->
+                        downloadProgress = progress
+                    }
+                }
+            } catch (e: Exception) {
+                println("DEBUG: Failed to get queue manager: ${e.message}")
+            }
+        }
+    }
 
     Box(
         modifier = modifier
@@ -212,7 +245,7 @@ fun DownloadQueueScreen(
                             OutlinedButton(
                                 onClick = {
                                     coroutineScope.launch {
-                                        downloadQueueManager.pauseAll()
+                                        DownloadServiceManager.pauseAll(context)
                                     }
                                 },
                                 modifier = Modifier.weight(1f)
@@ -227,7 +260,7 @@ fun DownloadQueueScreen(
                             OutlinedButton(
                                 onClick = {
                                     coroutineScope.launch {
-                                        downloadQueueManager.clearCompleted()
+                                        DownloadServiceManager.clearCompleted(context)
                                     }
                                 },
                                 modifier = Modifier.weight(1f)
@@ -295,22 +328,22 @@ fun DownloadQueueScreen(
                                     progress = progress,
                                     onCancel = {
                                         coroutineScope.launch {
-                                            downloadQueueManager.cancelDownload(progress.downloadId)
+                                            DownloadServiceManager.cancelDownload(context, progress.downloadId)
                                         }
                                     },
                                     onPause = {
                                         coroutineScope.launch {
-                                            downloadQueueManager.pauseDownload(progress.downloadId)
+                                            DownloadServiceManager.pauseDownload(context, progress.downloadId)
                                         }
                                     },
                                     onResume = {
                                         coroutineScope.launch {
-                                            downloadQueueManager.resumeDownload(progress.downloadId)
+                                            DownloadServiceManager.resumeDownload(context, progress.downloadId)
                                         }
                                     },
                                     onRetry = {
                                         coroutineScope.launch {
-                                            downloadQueueManager.retryDownload(progress.downloadId)
+                                            DownloadServiceManager.retryDownload(context, progress.downloadId)
                                         }
                                     }
                                 )
