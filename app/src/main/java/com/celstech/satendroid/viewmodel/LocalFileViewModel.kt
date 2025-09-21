@@ -193,15 +193,23 @@ class LocalFileViewModel(
         return result
     }
 
-    fun deleteFolder(item: LocalItem.Folder): Boolean {
-        var result = false
+    fun deleteFolder(item: LocalItem.Folder) {
         viewModelScope.launch {
-            result = repository.deleteFolder(item)
-            if (result) {
-                clearCacheForFolder(item.path)
+            try {
+                val result = repository.deleteFolder(item)
+                if (result) {
+                    clearCacheForFolder(item.path)
+                    println("DEBUG: ViewModel - Folder deleted successfully: ${item.name}")
+                    // 削除後にディレクトリを再スキャンして表示を更新
+                    scanDirectory(_uiState.value.currentPath)
+                } else {
+                    println("DEBUG: ViewModel - Failed to delete folder: ${item.name}")
+                }
+            } catch (e: Exception) {
+                println("ERROR: ViewModel - Exception during folder deletion: ${e.message}")
+                e.printStackTrace()
             }
         }
-        return result
     }
 
     fun deleteSelectedItems() {

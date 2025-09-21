@@ -440,12 +440,8 @@ fun FileSelectionScreen(
                             if (uiState.itemToDelete != null) {
                                 when (val item = uiState.itemToDelete!!) {
                                     is LocalItem.Folder -> {
-                                        val success = viewModel.deleteFolder(item)
-                                        if (!success) {
-                                            println("DEBUG: Failed to delete ${uiState.itemToDelete!!.name}")
-                                        }
+                                        viewModel.deleteFolder(item)
                                         viewModel.setItemToDelete(null)
-                                        viewModel.scanDirectory(uiState.currentPath)
                                         viewModel.setShowDeleteConfirmDialog(false)
                                     }
 

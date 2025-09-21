@@ -106,19 +106,23 @@ class LocalFileRepository(private val context: Context) {
      */
     suspend fun deleteFolder(item: LocalItem.Folder): Boolean = withContext(Dispatchers.IO) {
         try {
-            val baseDirectories = getBaseDirectories()
-            
-            var deleted = false
-            for (baseDir in baseDirectories) {
-                val folderFile = File(baseDir, item.path)
-                if (folderFile.exists() && folderFile.isDirectory) {
-                    deleted = folderFile.deleteRecursively() || deleted
+            // 絶対パスとして直接処理（パス統一修正）
+            val folderFile = File(item.path)
+            if (folderFile.exists() && folderFile.isDirectory) {
+                val success = folderFile.deleteRecursively()
+                if (success) {
+                    println("DEBUG: Repository deleted folder: ${item.name}")
+                } else {
+                    println("DEBUG: Failed to delete folder recursively: ${item.name}")
                 }
+                return@withContext success
             }
             
-            deleted
+            println("DEBUG: Folder not found at path: ${item.path}")
+            false
         } catch (e: Exception) {
             println("DEBUG: Failed to delete folder: ${e.message}")
+            e.printStackTrace()
             false
         }
     }
