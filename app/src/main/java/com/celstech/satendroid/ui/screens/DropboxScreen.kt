@@ -18,7 +18,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -37,10 +36,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.celstech.satendroid.LocalDownloadQueueManager
 import com.celstech.satendroid.dropbox.DropboxAuthManager
 import com.celstech.satendroid.dropbox.DropboxAuthState
+import com.celstech.satendroid.ui.models.CloudType
 import com.celstech.satendroid.ui.models.DropboxItem
-import com.celstech.satendroid.ui.models.DownloadProgress
+import com.celstech.satendroid.ui.models.DownloadRequest
 import com.celstech.satendroid.utils.FormatUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -48,18 +49,20 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * Dropbox画面 - Dropboxとの連携、ファイル管理を行う
+ * Dropbox画面 - 完全キューシステム統合版
  */
 @Composable
 fun DropboxScreen(
     dropboxAuthManager: DropboxAuthManager,
+    currentLocalPath: String = "",
     onBackToLocal: () -> Unit,
     onDismiss: () -> Unit,
-    currentLocalPath: String = "" // 現在のローカルパスパラメータを追加
+    onOpenDownloadQueue: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val authState by dropboxAuthManager.authState.collectAsState()
+    val downloadQueueManager = LocalDownloadQueueManager.current
 
     // State for file browsing
     var dropboxItems by remember { mutableStateOf<List<DropboxItem>>(emptyList()) }
@@ -68,24 +71,14 @@ fun DropboxScreen(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var downloadMessage by remember { mutableStateOf<String?>(null) }
 
-    // Progress tracking state
-    var isDownloading by remember { mutableStateOf(false) }
-    var downloadProgress by remember { mutableStateOf(DownloadProgress()) }
+    // キューの状態を監視
+    val queueState by downloadQueueManager.queueState.collectAsState()
 
-    // Function to download ZIP file to current location or Downloads folder
-    fun downloadZipFile(item: DropboxItem.ZipFile, client: com.dropbox.core.v2.DbxClientV2) {
+    // Function to add single file to download queue
+    fun addToDownloadQueue(item: DropboxItem.ZipFile) {
         coroutineScope.launch {
             try {
-                isDownloading = true
-                isLoadingFiles = true
-                downloadMessage = null
-                downloadProgress = DownloadProgress(
-                    fileName = item.name,
-                    totalBytes = item.size,
-                    totalFiles = 1
-                )
-
-                // 一括ダウンロードと統一されたダウンロード先決定ロジック
+                // ダウンロード先ディレクトリの決定
                 val downloadDir = if (currentLocalPath.isNotEmpty()) {
                     File(currentLocalPath)
                 } else {
@@ -94,82 +87,18 @@ fun DropboxScreen(
                     File(appDownloadsDir, "SatenDroid")
                 }
 
-                println("DEBUG: Download directory determined: ${downloadDir.absolutePath}")
-                println("DEBUG: Current local path: '$currentLocalPath'")
+                // ダウンロード要求を作成
+                val downloadRequest = DownloadRequest(
+                    id = DownloadRequest.generateId(),
+                    cloudType = CloudType.DROPBOX,
+                    fileName = item.name,
+                    remotePath = item.path,
+                    localPath = downloadDir.absolutePath,
+                    fileSize = item.size
+                )
 
-                // Create directory with detailed error checking
-                if (!downloadDir.exists()) {
-                    val created = downloadDir.mkdirs()
-                    println("DEBUG: Directory creation result: $created")
-                    println("DEBUG: Directory path: ${downloadDir.absolutePath}")
-                    println("DEBUG: Directory exists after creation: ${downloadDir.exists()}")
-
-                    if (!created && !downloadDir.exists()) {
-                        throw Exception("Failed to create download directory: ${downloadDir.absolutePath}")
-                    }
-                }
-
-                val localFile = File(downloadDir, item.name)
-                println("DEBUG: Downloading to: ${localFile.absolutePath}")
-
-                val startTime = System.currentTimeMillis()
-
-                withContext(Dispatchers.IO) {
-                    val downloader = client.files().download(item.path)
-
-                    // Use BufferedOutputStream with 64KB buffer for efficient disk I/O
-                    val outputStream = java.io.BufferedOutputStream(localFile.outputStream(), 65536)
-                    val buffer = ByteArray(65536) // 64KB buffer for better network performance
-                    var bytesDownloaded = 0L
-                    var lastUpdateTime = 0L
-                    val updateInterval = 500L // Update UI every 500ms to reduce overhead
-
-                    val inputStream = downloader.inputStream
-
-                    try {
-                        var bytesRead: Int
-                        while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                            outputStream.write(buffer, 0, bytesRead)
-                            bytesDownloaded += bytesRead
-
-                            // Update progress on main thread with throttling
-                            val currentTime = System.currentTimeMillis()
-                            if (currentTime - lastUpdateTime > updateInterval) {
-                                withContext(Dispatchers.Main) {
-                                    val elapsedTime = (currentTime - startTime) / 1000.0 // seconds
-                                    val speed =
-                                        if (elapsedTime > 0) bytesDownloaded / elapsedTime else 0.0
-                                    val remaining =
-                                        if (speed > 0) (item.size - bytesDownloaded) / speed else 0.0
-
-                                    downloadProgress = downloadProgress.copy(
-                                        currentFileProgress = bytesDownloaded.toFloat() / item.size.toFloat(),
-                                        bytesDownloaded = bytesDownloaded,
-                                        downloadSpeed = FormatUtils.formatSpeed(speed),
-                                        estimatedTimeRemaining = FormatUtils.formatTime(remaining)
-                                    )
-                                }
-                                lastUpdateTime = currentTime
-                            }
-                        }
-                        
-                        // Final progress update to ensure 100% completion is shown
-                        withContext(Dispatchers.Main) {
-                            val elapsedTime = (System.currentTimeMillis() - startTime) / 1000.0
-                            val speed = if (elapsedTime > 0) bytesDownloaded / elapsedTime else 0.0
-
-                            downloadProgress = downloadProgress.copy(
-                                currentFileProgress = 1.0f,
-                                bytesDownloaded = bytesDownloaded,
-                                downloadSpeed = FormatUtils.formatSpeed(speed),
-                                estimatedTimeRemaining = "Complete"
-                            )
-                        }
-                    } finally {
-                        inputStream.close()
-                        outputStream.close()
-                    }
-                }
+                // キューに追加
+                downloadQueueManager.enqueueDownload(downloadRequest)
 
                 val downloadLocationText = if (currentLocalPath.isNotEmpty()) {
                     "current folder"
@@ -177,23 +106,19 @@ fun DropboxScreen(
                     "SatenDroid folder"
                 }
 
-                downloadMessage =
-                    "✅ Downloaded: ${item.name}\nSaved to $downloadLocationText\nPath: ${localFile.absolutePath}"
-                println("DEBUG: Downloaded ${item.name} to ${localFile.absolutePath}")
+                downloadMessage = "✅ Added to download queue: ${item.name}\nWill be saved to $downloadLocationText"
+                println("DEBUG: Added ${item.name} to download queue")
 
             } catch (e: Exception) {
-                downloadMessage = "❌ Failed to download ${item.name}: ${e.message}"
-                println("DEBUG: Download error: ${e.message}")
+                downloadMessage = "❌ Failed to add ${item.name} to queue: ${e.message}"
+                println("DEBUG: Failed to add to queue: ${e.message}")
                 e.printStackTrace()
-            } finally {
-                isDownloading = false
-                isLoadingFiles = false
             }
         }
     }
 
-    // Function to download all ZIP files in current folder
-    fun downloadFolderZips(client: com.dropbox.core.v2.DbxClientV2) {
+    // Function to add all ZIP files in current folder to download queue
+    fun addFolderToDownloadQueue() {
         val zipFiles = dropboxItems.filterIsInstance<DropboxItem.ZipFile>()
         if (zipFiles.isEmpty()) {
             downloadMessage = "No ZIP files found in this folder"
@@ -202,21 +127,9 @@ fun DropboxScreen(
 
         coroutineScope.launch {
             try {
-                isDownloading = true
-                isLoadingFiles = true
-                downloadMessage = null
-                val folderName =
-                    if (currentPath.isEmpty()) "Root" else currentPath.substringAfterLast("/")
+                val folderName = if (currentPath.isEmpty()) "Root" else currentPath.substringAfterLast("/")
 
-                val totalBytes = zipFiles.sumOf { it.size }
-                downloadProgress = DownloadProgress(
-                    fileName = "Preparing download...",
-                    currentFileIndex = 0,
-                    totalFiles = zipFiles.size,
-                    totalBytes = totalBytes
-                )
-
-                // 単一ダウンロードと統一されたダウンロード先決定ロジック
+                // ダウンロード先ディレクトリの決定
                 val baseDownloadDir = if (currentLocalPath.isNotEmpty()) {
                     File(currentLocalPath)
                 } else {
@@ -225,116 +138,30 @@ fun DropboxScreen(
                     File(appDownloadsDir, "SatenDroid")
                 }
 
-                // バッチダウンロード用サブフォルダの作成（統一処理）
-                // 常にDropboxフォルダー名でサブディレクトリを作成してフォルダー構造を保持
+                // バッチダウンロード用サブフォルダー
                 val batchDownloadDir = File(baseDownloadDir, folderName)
 
-                println("DEBUG: Base download directory: ${baseDownloadDir.absolutePath}")
-                println("DEBUG: Batch download directory: ${batchDownloadDir.absolutePath}")
+                var addedCount = 0
+                var failedCount = 0
 
-                // Create base directory with detailed error checking
-                if (!baseDownloadDir.exists()) {
-                    val created = baseDownloadDir.mkdirs()
-                    println("DEBUG: Base directory creation result: $created")
-                    println("DEBUG: Base directory path: ${baseDownloadDir.absolutePath}")
-
-                    if (!created && !baseDownloadDir.exists()) {
-                        throw Exception("Failed to create base directory: ${baseDownloadDir.absolutePath}")
-                    }
-                }
-
-                // Create batch download directory (統一処理で常に作成)
-                if (!batchDownloadDir.exists()) {
-                    val created = batchDownloadDir.mkdirs()
-                    println("DEBUG: Batch directory creation result: $created")
-                    println("DEBUG: Batch directory path: ${batchDownloadDir.absolutePath}")
-
-                    if (!created && !batchDownloadDir.exists()) {
-                        throw Exception("Failed to create batch directory: ${batchDownloadDir.absolutePath}")
-                    }
-                }
-
-                var successCount = 0
-                var failCount = 0
-                var totalBytesDownloaded = 0L
-                val startTime = System.currentTimeMillis()
-
-                for ((index, zipFile) in zipFiles.withIndex()) {
+                for (zipFile in zipFiles) {
                     try {
-                        downloadProgress = downloadProgress.copy(
+                        val downloadRequest = DownloadRequest(
+                            id = DownloadRequest.generateId(),
+                            cloudType = CloudType.DROPBOX,
                             fileName = zipFile.name,
-                            currentFileIndex = index,
-                            currentFileProgress = 0f
+                            remotePath = zipFile.path,
+                            localPath = batchDownloadDir.absolutePath,
+                            fileSize = zipFile.size
                         )
 
-                        val localFile = File(batchDownloadDir, zipFile.name)
-                        println("DEBUG: Downloading ${zipFile.name} to: ${localFile.absolutePath}")
-
-                        withContext(Dispatchers.IO) {
-                            val downloader = client.files().download(zipFile.path)
-
-                            // Use BufferedOutputStream with 64KB buffer for efficient disk I/O
-                            val outputStream = java.io.BufferedOutputStream(localFile.outputStream(), 65536)
-                            val buffer = ByteArray(65536) // 64KB buffer for better network performance
-                            var fileBytesDownloaded = 0L
-                            var lastUpdateTime = 0L
-                            val updateInterval = 500L // Update UI every 500ms to reduce overhead
-
-                            val inputStream = downloader.inputStream
-
-                            try {
-                                var bytesRead: Int
-                                while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                                    outputStream.write(buffer, 0, bytesRead)
-                                    fileBytesDownloaded += bytesRead
-                                    totalBytesDownloaded += bytesRead
-
-                                    // Update progress on main thread with throttling
-                                    val currentTime = System.currentTimeMillis()
-                                    if (currentTime - lastUpdateTime > updateInterval) {
-                                        withContext(Dispatchers.Main) {
-                                            val elapsedTime = (currentTime - startTime) / 1000.0 // seconds
-                                            val speed =
-                                                if (elapsedTime > 0) totalBytesDownloaded / elapsedTime else 0.0
-                                            val remaining =
-                                                if (speed > 0) (totalBytes - totalBytesDownloaded) / speed else 0.0
-
-                                            downloadProgress = downloadProgress.copy(
-                                                currentFileProgress = fileBytesDownloaded.toFloat() / zipFile.size.toFloat(),
-                                                bytesDownloaded = totalBytesDownloaded,
-                                                downloadSpeed = FormatUtils.formatSpeed(speed),
-                                                estimatedTimeRemaining = FormatUtils.formatTime(remaining)
-                                            )
-                                        }
-                                        lastUpdateTime = currentTime
-                                    }
-                                }
-                                
-                                // Final progress update for current file completion
-                                withContext(Dispatchers.Main) {
-                                    downloadProgress = downloadProgress.copy(
-                                        currentFileProgress = 1.0f,
-                                        bytesDownloaded = totalBytesDownloaded
-                                    )
-                                }
-                            } finally {
-                                inputStream.close()
-                                outputStream.close()
-                            }
-                        }
-
-                        // Verify file was created
-                        if (localFile.exists() && localFile.length() > 0) {
-                            successCount++
-                            println("DEBUG: Successfully downloaded ${zipFile.name} (${localFile.length()} bytes)")
-                        } else {
-                            failCount++
-                            println("DEBUG: File was not created or is empty: ${localFile.absolutePath}")
-                        }
+                        downloadQueueManager.enqueueDownload(downloadRequest)
+                        addedCount++
+                        println("DEBUG: Added ${zipFile.name} to download queue")
 
                     } catch (e: Exception) {
-                        failCount++
-                        println("DEBUG: Failed to download ${zipFile.name}: ${e.message}")
+                        failedCount++
+                        println("DEBUG: Failed to add ${zipFile.name} to queue: ${e.message}")
                         e.printStackTrace()
                     }
                 }
@@ -345,21 +172,16 @@ fun DropboxScreen(
                     "SatenDroid/${folderName}"
                 }
 
-                downloadMessage = "✅ Folder download complete!\n" +
+                downloadMessage = "✅ Added $addedCount files to download queue!\n" +
                         "Folder: $folderName\n" +
-                        "Success: $successCount files\n" +
-                        "Failed: $failCount files\n" +
-                        "Total size: ${FormatUtils.formatFileSize(totalBytesDownloaded)}\n" +
-                        "Saved to $downloadLocationText\n" +
-                        "Path: ${batchDownloadDir.absolutePath}"
+                        "Successfully added: $addedCount files\n" +
+                        "Failed: $failedCount files\n" +
+                        "Will be saved to $downloadLocationText"
 
             } catch (e: Exception) {
-                downloadMessage = "❌ Folder download failed: ${e.message}"
-                println("DEBUG: Folder download error: ${e.message}")
+                downloadMessage = "❌ Failed to add folder to queue: ${e.message}"
+                println("DEBUG: Folder queue addition error: ${e.message}")
                 e.printStackTrace()
-            } finally {
-                isDownloading = false
-                isLoadingFiles = false
             }
         }
     }
@@ -477,6 +299,13 @@ fun DropboxScreen(
                     )
 
                     Row {
+                        // Download Queue button
+                        if (queueState.isActive || queueState.totalDownloads > 0) {
+                            TextButton(onClick = onOpenDownloadQueue) {
+                                Text("📥 Queue (${queueState.activeDownloads + queueState.queuedDownloads})")
+                            }
+                        }
+
                         // Back to Local Files button
                         TextButton(onClick = onBackToLocal) {
                             Text("📁 Local Files")
@@ -573,7 +402,7 @@ fun DropboxScreen(
                                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                                     )
 
-                                    // Download destination info (統一表示)
+                                    // Download destination info
                                     if (currentLocalPath.isNotEmpty()) {
                                         Text(
                                             text = "📥 Downloads to: ${
@@ -621,11 +450,9 @@ fun DropboxScreen(
                                     if (zipCount > 0) {
                                         OutlinedButton(
                                             onClick = {
-                                                val authenticatedState =
-                                                    authState as DropboxAuthState.Authenticated
-                                                downloadFolderZips(authenticatedState.client)
+                                                addFolderToDownloadQueue()
                                             },
-                                            enabled = !isLoadingFiles && !isDownloading
+                                            enabled = !isLoadingFiles
                                         ) {
                                             Text("⬇️ All ($zipCount)")
                                         }
@@ -633,8 +460,8 @@ fun DropboxScreen(
                                 }
                             }
 
-                            // Download progress display
-                            if (isDownloading) {
+                            // Active downloads indicator
+                            if (queueState.isActive) {
                                 Card(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -643,97 +470,39 @@ fun DropboxScreen(
                                         containerColor = MaterialTheme.colorScheme.primaryContainer
                                     )
                                 ) {
-                                    Column(
+                                    Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(16.dp)
+                                            .padding(16.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
+                                        Column(
+                                            modifier = Modifier.weight(1f)
                                         ) {
                                             Text(
-                                                text = "Downloading",
+                                                text = "Downloads Active",
                                                 style = MaterialTheme.typography.titleMedium,
                                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                                             )
-
                                             Text(
-                                                text = downloadProgress.progressText,
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                                                text = "${queueState.activeDownloads} downloading, ${queueState.queuedDownloads} queued",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
                                             )
+                                            if (queueState.overallSpeed > 0) {
+                                                Text(
+                                                    text = "Speed: ${FormatUtils.formatSpeed(queueState.overallSpeed)}",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                                                )
+                                            }
                                         }
 
-                                        Spacer(modifier = Modifier.height(8.dp))
-
-                                        // File name
-                                        Text(
-                                            text = downloadProgress.fileName,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                            maxLines = 1
-                                        )
-
-                                        Spacer(modifier = Modifier.height(8.dp))
-
-                                        // Progress bar
-                                        LinearProgressIndicator(
-                                            progress = { downloadProgress.overallProgress },
-                                            modifier = Modifier.fillMaxWidth(),
-                                            color = MaterialTheme.colorScheme.primary,
-                                            trackColor = MaterialTheme.colorScheme.primary.copy(
-                                                alpha = 0.3f
-                                            )
-                                        )
-
-                                        Spacer(modifier = Modifier.height(8.dp))
-
-                                        // Speed and time info
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        Button(
+                                            onClick = onOpenDownloadQueue
                                         ) {
-                                            Text(
-                                                text = if (downloadProgress.downloadSpeed.isNotEmpty())
-                                                    "Speed: ${downloadProgress.downloadSpeed}"
-                                                else "Calculating speed...",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(
-                                                    alpha = 0.8f
-                                                )
-                                            )
-
-                                            Text(
-                                                text = if (downloadProgress.estimatedTimeRemaining.isNotEmpty())
-                                                    "ETA: ${downloadProgress.estimatedTimeRemaining}"
-                                                else "Calculating...",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(
-                                                    alpha = 0.8f
-                                                )
-                                            )
-                                        }
-
-                                        // Size info
-                                        if (downloadProgress.totalBytes > 0) {
-                                            Spacer(modifier = Modifier.height(4.dp))
-                                            Text(
-                                                text = "${
-                                                    FormatUtils.formatFileSize(
-                                                        downloadProgress.bytesDownloaded
-                                                    )
-                                                } / ${
-                                                    FormatUtils.formatFileSize(
-                                                        downloadProgress.totalBytes
-                                                    )
-                                                }",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(
-                                                    alpha = 0.8f
-                                                )
-                                            )
+                                            Text("View Queue")
                                         }
                                     }
                                 }
@@ -930,16 +699,11 @@ fun DropboxScreen(
                                                         is DropboxItem.ZipFile -> {
                                                             Button(
                                                                 onClick = {
-                                                                    val authenticatedState =
-                                                                        authState as DropboxAuthState.Authenticated
-                                                                    downloadZipFile(
-                                                                        item,
-                                                                        authenticatedState.client
-                                                                    )
+                                                                    addToDownloadQueue(item)
                                                                 },
-                                                                enabled = !isLoadingFiles && !isDownloading
+                                                                enabled = !isLoadingFiles
                                                             ) {
-                                                                Text("⬇️ Download")
+                                                                Text("+ Queue")
                                                             }
                                                         }
 
@@ -964,6 +728,14 @@ fun DropboxScreen(
                                     onClick = { dropboxAuthManager.logout() }
                                 ) {
                                     Text("Disconnect")
+                                }
+
+                                if (queueState.totalDownloads > 0) {
+                                    OutlinedButton(
+                                        onClick = onOpenDownloadQueue
+                                    ) {
+                                        Text("📥 View Queue")
+                                    }
                                 }
 
                                 OutlinedButton(

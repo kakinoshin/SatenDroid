@@ -58,6 +58,7 @@ fun FileSelectionScreen(
     onDirectoryChanged: (String) -> Unit,
     onOpenFromDevice: () -> Unit,
     onOpenFromDropbox: () -> Unit,
+    onOpenDownloadQueue: () -> Unit,
     onOpenSettings: () -> Unit,
     isLoading: Boolean,
     onReturnFromViewer: (() -> Unit)? = null,
@@ -211,24 +212,36 @@ fun FileSelectionScreen(
         Spacer(modifier = Modifier.height(16.dp))
 
         // Action buttons
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Button(
-                onClick = onOpenFromDevice,
-                modifier = Modifier.weight(1f),
-                enabled = !isLoading
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text("📱 Open from Device")
-            }
+                Button(
+                    onClick = onOpenFromDevice,
+                    modifier = Modifier.weight(1f),
+                    enabled = !isLoading
+                ) {
+                    Text("📱 Open from Device")
+                }
 
+                OutlinedButton(
+                    onClick = onOpenFromDropbox,
+                    modifier = Modifier.weight(1f),
+                    enabled = !isLoading
+                ) {
+                    Text("☁️ Open from Dropbox")
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(8.dp))
+            
             OutlinedButton(
-                onClick = onOpenFromDropbox,
-                modifier = Modifier.weight(1f),
+                onClick = onOpenDownloadQueue,
+                modifier = Modifier.fillMaxWidth(),
                 enabled = !isLoading
             ) {
-                Text("☁️ Open from Dropbox")
+                Text("📥 Download Queue")
             }
         }
 

@@ -33,6 +33,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.celstech.satendroid.LocalDropboxAuthManager
+import com.celstech.satendroid.LocalDownloadQueueManager
 import com.celstech.satendroid.navigation.FileNavigationManager
 import com.celstech.satendroid.ui.models.ViewState
 import com.celstech.satendroid.ui.models.ImageViewerState
@@ -49,8 +50,8 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * メイン画面 - シンプルで確実に動作する版
- * 複雑な State Machine を削除し、基本機能の確実な動作を優先
+ * メイン画面 - ダウンロードキュー対応版
+ * シンプルで確実に動作する版 + ダウンロードキュー画面追加
  */
 @OptIn(ExperimentalFoundationApi::class, ExperimentalPermissionsApi::class)
 @Composable
@@ -345,6 +346,9 @@ fun MainScreen() {
                 onOpenFromDropbox = {
                     currentView = ViewState.DropboxBrowser
                 },
+                onOpenDownloadQueue = {
+                    currentView = ViewState.DownloadQueue
+                },
                 onOpenSettings = {
                     currentView = ViewState.Settings
                 },
@@ -623,6 +627,18 @@ fun MainScreen() {
                 onBackToLocal = {
                     currentView = ViewState.LocalFileList
                 },
+                onDismiss = {
+                    currentView = ViewState.LocalFileList
+                },
+                onOpenDownloadQueue = {
+                    currentView = ViewState.DownloadQueue
+                }
+            )
+        }
+
+        is ViewState.DownloadQueue -> {
+            DownloadQueueScreen(
+                downloadQueueManager = LocalDownloadQueueManager.current,
                 onDismiss = {
                     currentView = ViewState.LocalFileList
                 }

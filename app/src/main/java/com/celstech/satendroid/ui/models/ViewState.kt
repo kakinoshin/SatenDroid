@@ -12,6 +12,7 @@ sealed class ViewState {
     object LocalFileList : ViewState()
     object ImageViewer : ViewState()
     object DropboxBrowser : ViewState()
+    object DownloadQueue : ViewState()  // 新しいダウンロードキュー画面
     object Settings : ViewState()
 }
 
