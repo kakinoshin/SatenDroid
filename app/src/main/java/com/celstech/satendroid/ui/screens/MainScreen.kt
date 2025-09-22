@@ -480,7 +480,7 @@ fun MainScreen() {
                                             }
                                         }
 
-                                        println("DEBUG: Saved position and status ${statusToSave} before returning to file list")
+                                        println("DEBUG: Saved position and status $statusToSave before returning to file list")
                                         println("DEBUG: Page: ${pagerState.currentPage}/${currentState.imageEntries.size}")
                                     }
                                 }
@@ -639,6 +639,9 @@ fun MainScreen() {
             DownloadQueueScreen(
                 onDismiss = {
                     currentView = ViewState.LocalFileList
+                },
+                onOpenSettings = {
+                    currentView = ViewState.Settings
                 }
             )
         }

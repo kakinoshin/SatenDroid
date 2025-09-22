@@ -24,6 +24,8 @@ import com.celstech.satendroid.utils.SimpleReadingDataManager
 import com.celstech.satendroid.utils.FileReadingData
 import com.celstech.satendroid.ui.components.InfoDialog
 import com.celstech.satendroid.ui.models.ReadingStatus
+import com.celstech.satendroid.settings.DownloadSettings
+import androidx.compose.ui.platform.LocalContext
 import java.io.File
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
@@ -37,7 +39,11 @@ fun SettingsScreen(
     directZipHandler: com.celstech.satendroid.utils.DirectZipImageHandler? = null,
     onBackPressed: () -> Unit
 ) {
+    val context = LocalContext.current
+    val downloadSettings = remember { DownloadSettings.getInstance(context) }
+    
     val reverseSwipeDirection by readingDataManager.reverseSwipeDirection.collectAsState()
+    val maxConcurrentDownloads by downloadSettings.maxConcurrentDownloads.collectAsState()
     val coroutineScope = rememberCoroutineScope()
 
     var showConfirmClearDialog by remember { mutableStateOf(false) }
@@ -104,6 +110,93 @@ fun SettingsScreen(
                             checked = reverseSwipeDirection,
                             onCheckedChange = { readingDataManager.setReverseSwipeDirection(it) }
                         )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // ダウンロード設定
+            Card(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Text(
+                        text = "ダウンロード設定",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // 最大同時ダウンロード数設定
+                    Column {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "最大同時ダウンロード数",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Text(
+                                text = "$maxConcurrentDownloads",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        Slider(
+                            value = maxConcurrentDownloads.toFloat(),
+                            onValueChange = { value ->
+                                downloadSettings.setMaxConcurrentDownloads(value.toInt())
+                            },
+                            valueRange = downloadSettings.getMinConcurrentDownloads().toFloat()..downloadSettings.getMaxConcurrentDownloadsLimit().toFloat(),
+                            steps = downloadSettings.getMaxConcurrentDownloadsLimit() - downloadSettings.getMinConcurrentDownloads() - 1,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "${downloadSettings.getMinConcurrentDownloads()}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = "${downloadSettings.getMaxConcurrentDownloadsLimit()}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        Text(
+                            text = "同時にダウンロードするファイルの最大数を設定します。値が大きいほど高速ですが、ネットワークやストレージに負荷がかかります。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        
+                        if (maxConcurrentDownloads != downloadSettings.getDefaultConcurrentDownloads()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    downloadSettings.resetToDefaults()
+                                },
+                                modifier = Modifier.align(Alignment.End)
+                            ) {
+                                Text("デフォルトに戻す")
+                            }
+                        }
                     }
                 }
             }

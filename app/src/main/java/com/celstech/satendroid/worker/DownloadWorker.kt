@@ -10,7 +10,6 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
-
 import com.celstech.satendroid.MainActivity
 import com.celstech.satendroid.download.downloader.DropboxDownloader
 import com.celstech.satendroid.dropbox.DropboxAuthManager

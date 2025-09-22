@@ -53,6 +53,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun DownloadQueueScreen(
     onDismiss: () -> Unit,
+    onOpenSettings: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -101,8 +102,19 @@ fun DownloadQueueScreen(
                         style = MaterialTheme.typography.headlineSmall
                     )
 
-                    TextButton(onClick = onDismiss) {
-                        Text("✕ Close")
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (onOpenSettings != null) {
+                            TextButton(onClick = onOpenSettings) {
+                                Text("⚙️ Settings")
+                            }
+                        }
+                        
+                        TextButton(onClick = onDismiss) {
+                            Text("✕ Close")
+                        }
                     }
                 }
 
