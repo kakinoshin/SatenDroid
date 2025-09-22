@@ -103,6 +103,9 @@ dependencies {
     // Kotlinx Serialization
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.0")
 
+    // WorkManager
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
+
     // Unit Testing dependencies
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.mockito:mockito-core:5.10.0")

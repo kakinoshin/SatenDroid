@@ -46,11 +46,13 @@
             </intent-filter>
         </activity>
 
-        <!-- Download Service -->
+        <!-- Download Service - Deprecated, using WorkManager now -->
+        <!-- 
         <service
             android:name=".service.DownloadService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        -->
     </application>
 </manifest>

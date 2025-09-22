@@ -59,36 +59,14 @@ fun DownloadQueueScreen(
     val coroutineScope = rememberCoroutineScope()
     
     // DownloadServiceManagerの状態を監視
-    val isServiceConnected by DownloadServiceManager.isServiceConnected.collectAsState()
+    val downloadProgressFlow = DownloadServiceManager.getDownloadProgress(context)
+    val queueStateFlow = DownloadServiceManager.getQueueState(context)
     
-    // ダウンロードの状態を監視
-    var queueState by remember { mutableStateOf(com.celstech.satendroid.ui.models.DownloadQueueState()) }
-    var downloadProgress by remember { mutableStateOf<Map<String, com.celstech.satendroid.ui.models.DownloadProgressInfo>>(emptyMap()) }
+    // 状態を監視
+    val queueState by queueStateFlow.collectAsState()
+    val downloadProgress by downloadProgressFlow.collectAsState()
     
-    // サービス接続後にキューの状態を監視開始
-    LaunchedEffect(isServiceConnected) {
-        if (isServiceConnected) {
-            try {
-                val queueManager = DownloadServiceManager.getQueueManager(context)
-                
-                // キューの状態を監視
-                launch {
-                    queueManager.queueState.collect { state ->
-                        queueState = state
-                    }
-                }
-                
-                // ダウンロード進捗を監視
-                launch {
-                    queueManager.downloadProgress.collect { progress ->
-                        downloadProgress = progress
-                    }
-                }
-            } catch (e: Exception) {
-                println("DEBUG: Failed to get queue manager: ${e.message}")
-            }
-        }
-    }
+    // 初期化（WorkManagerでは自動的に開始されるため特別な処理は不要）
 
     Box(
         modifier = modifier

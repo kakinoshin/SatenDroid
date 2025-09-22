@@ -121,7 +121,9 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         
         // DownloadServiceManagerによるサービス接続切断
-        DownloadServiceManager.disconnect(this)
+        lifecycleScope.launch {
+            DownloadServiceManager.disconnect(this@MainActivity)
+        }
         
         // リソースのクリーンアップ
         lifecycleScope.launch {

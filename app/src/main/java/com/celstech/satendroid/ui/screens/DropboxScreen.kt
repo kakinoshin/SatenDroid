@@ -70,27 +70,9 @@ fun DropboxScreen(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var downloadMessage by remember { mutableStateOf<String?>(null) }
 
-    // DownloadServiceManagerの状態を監視
-    val isServiceConnected by DownloadServiceManager.isServiceConnected.collectAsState()
-    
-    // キューの状態を監視（サービス接続後に取得）
-    var queueState by remember { mutableStateOf(com.celstech.satendroid.ui.models.DownloadQueueState()) }
-    
-    // サービス接続後にキューの状態を監視開始
-    LaunchedEffect(isServiceConnected) {
-        if (isServiceConnected) {
-            try {
-                val queueManager = DownloadServiceManager.getQueueManager(context)
-                launch {
-                    queueManager.queueState.collect { state ->
-                        queueState = state
-                    }
-                }
-            } catch (e: Exception) {
-                println("DEBUG: Failed to get queue manager: ${e.message}")
-            }
-        }
-    }
+    // DropboxDownloadServiceManagerの状態を監視
+    val queueStateFlow = DownloadServiceManager.getQueueState(context)
+    val queueState by queueStateFlow.collectAsState()
 
     // Function to add single file to download queue
     fun addToDownloadQueue(item: DropboxItem.ZipFile) {

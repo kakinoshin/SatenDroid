@@ -2,10 +2,12 @@ package com.celstech.satendroid.ui.models
 
 import android.os.Parcelable
 import kotlinx.parcelize.Parcelize
+import kotlinx.serialization.Serializable
 
 /**
  * クラウドサービスの種類
  */
+@Serializable
 enum class CloudType {
     DROPBOX,
     GOOGLE_DRIVE,
@@ -16,6 +18,7 @@ enum class CloudType {
 /**
  * ダウンロードの優先度
  */
+@Serializable
 enum class DownloadPriority {
     HIGH,
     NORMAL,
@@ -38,6 +41,7 @@ enum class DownloadStatus {
  * ダウンロード要求
  */
 @Parcelize
+@Serializable
 data class DownloadRequest(
     val id: String,
     val cloudType: CloudType,

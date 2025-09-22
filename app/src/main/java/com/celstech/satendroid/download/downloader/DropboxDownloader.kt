@@ -2,6 +2,7 @@ package com.celstech.satendroid.download.downloader
 
 import com.celstech.satendroid.dropbox.DropboxAuthManager
 import com.celstech.satendroid.dropbox.DropboxAuthState
+import com.celstech.satendroid.download.exceptions.DownloadException
 import com.celstech.satendroid.ui.models.CloudType
 import com.celstech.satendroid.ui.models.DownloadProgressInfo
 import com.celstech.satendroid.ui.models.DownloadRequest
