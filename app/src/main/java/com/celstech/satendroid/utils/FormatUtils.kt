@@ -47,7 +47,7 @@ object FormatUtils {
      * 秒数を時間形式にフォーマット
      */
     fun formatTime(seconds: Double): String {
-        if (seconds.isInfinite() || seconds.isNaN() || seconds < 0) {
+        if (seconds.isInfinite() || seconds.isNaN() || seconds <= 0) {
             return "∞"
         }
 
@@ -61,5 +61,13 @@ object FormatUtils {
             minutes > 0 -> "${minutes}m ${secs}s"
             else -> "${secs}s"
         }
+    }
+
+    /**
+     * 時間の長さを読みやすい形式にフォーマット（formatTimeの別名）
+     */
+    fun formatDuration(seconds: Long): String {
+        if (seconds <= 0) return "0s"
+        return formatTime(seconds.toDouble())
     }
 }

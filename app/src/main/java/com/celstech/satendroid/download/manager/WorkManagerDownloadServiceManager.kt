@@ -5,10 +5,13 @@ import com.celstech.satendroid.worker.WorkManagerDownloadQueueManager
 import com.celstech.satendroid.ui.models.DownloadQueueState
 import com.celstech.satendroid.ui.models.DownloadProgressInfo
 import com.celstech.satendroid.ui.models.DownloadRequest
+import com.celstech.satendroid.ui.models.DownloadQueue
+import com.celstech.satendroid.ui.models.DownloadHistory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.Flow
 
 /**
  * WorkManagerベースのダウンロードサービスマネージャー
@@ -23,10 +26,22 @@ class WorkManagerDownloadServiceManager(
     private val queueManager = WorkManagerDownloadQueueManager(context, coroutineScope)
     
     /**
-     * ダウンロード進捗のFlow
+     * ダウンロード進捗のFlow（従来互換性）
      */
     val downloadProgress: StateFlow<Map<String, DownloadProgressInfo>>
         get() = queueManager.downloadProgress
+    
+    /**
+     * ダウンロードキューのFlow（未処理のみ）
+     */
+    val downloadQueue: Flow<DownloadQueue>
+        get() = queueManager.downloadQueue
+    
+    /**
+     * ダウンロード履歴のFlow（処理済みのみ）
+     */
+    val downloadHistory: Flow<DownloadHistory>
+        get() = queueManager.downloadHistory
     
     /**
      * キューの状態のFlow
@@ -67,6 +82,13 @@ class WorkManagerDownloadServiceManager(
      */
     suspend fun clearCompleted() {
         queueManager.clearCompleted()
+    }
+    
+    /**
+     * 履歴から指定したダウンロードを削除
+     */
+    suspend fun removeFromHistory(downloadId: String) {
+        queueManager.removeFromHistory(downloadId)
     }
     
     /**

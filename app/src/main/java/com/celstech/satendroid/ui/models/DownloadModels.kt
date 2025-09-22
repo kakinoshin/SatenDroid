@@ -26,7 +26,25 @@ enum class DownloadPriority {
 }
 
 /**
- * ダウンロードの状態
+ * キューのダウンロード状態（未処理のみ）
+ */
+enum class DownloadQueueStatus {
+    QUEUED,          // キューに追加済み
+    DOWNLOADING,     // ダウンロード中
+    PAUSED          // 一時停止中
+}
+
+/**
+ * 履歴のダウンロード状態（処理済みのみ）
+ */
+enum class DownloadHistoryStatus {
+    COMPLETED,       // 完了
+    FAILED,          // 失敗
+    CANCELLED        // キャンセル済み
+}
+
+/**
+ * 従来との互換性のための統合ステータス
  */
 enum class DownloadStatus {
     QUEUED,          // キューに追加済み
@@ -58,7 +76,111 @@ data class DownloadRequest(
 }
 
 /**
- * ダウンロード進捗
+ * ダウンロード進捗情報
+ */
+data class DownloadProgress(
+    val bytesDownloaded: Long,
+    val totalBytes: Long,
+    val downloadSpeed: Double, // bytes per second
+    val estimatedTimeRemaining: Long // seconds
+) {
+    val progressPercentage: Float
+        get() = if (totalBytes > 0) (bytesDownloaded.toFloat() / totalBytes.toFloat()) else 0f
+}
+
+/**
+ * ダウンロードキューアイテム（未処理）
+ */
+data class DownloadQueueItem(
+    val downloadId: String,
+    val status: DownloadQueueStatus,
+    val request: DownloadRequest,
+    val progress: DownloadProgress?,
+    val queuePosition: Int,
+    val startTime: Long = System.currentTimeMillis(),
+    val errorMessage: String? = null
+) {
+    val isActive: Boolean
+        get() = status == DownloadQueueStatus.DOWNLOADING || status == DownloadQueueStatus.QUEUED
+
+    val canPause: Boolean
+        get() = status == DownloadQueueStatus.DOWNLOADING || status == DownloadQueueStatus.QUEUED
+
+    val canResume: Boolean
+        get() = status == DownloadQueueStatus.PAUSED
+
+    val canCancel: Boolean
+        get() = status == DownloadQueueStatus.DOWNLOADING || status == DownloadQueueStatus.QUEUED || status == DownloadQueueStatus.PAUSED
+}
+
+/**
+ * ダウンロード履歴アイテム（処理済み）
+ */
+data class DownloadHistoryItem(
+    val downloadId: String,
+    val status: DownloadHistoryStatus,
+    val request: DownloadRequest,
+    val result: DownloadResult,
+    val completedTime: Long,
+    val startTime: Long,
+    val errorMessage: String? = null
+) {
+    val canRetry: Boolean
+        get() = status == DownloadHistoryStatus.FAILED
+
+    val isCompleted: Boolean
+        get() = status == DownloadHistoryStatus.COMPLETED
+
+    val isFailed: Boolean
+        get() = status == DownloadHistoryStatus.FAILED
+}
+
+/**
+ * ダウンロードキュー（未処理のみ）
+ */
+data class DownloadQueue(
+    val items: List<DownloadQueueItem> = emptyList()
+) {
+    val activeCount: Int
+        get() = items.count { it.status == DownloadQueueStatus.DOWNLOADING }
+
+    val queuedCount: Int
+        get() = items.count { it.status == DownloadQueueStatus.QUEUED }
+
+    val pausedCount: Int
+        get() = items.count { it.status == DownloadQueueStatus.PAUSED }
+
+    val totalCount: Int
+        get() = items.size
+
+    val isEmpty: Boolean
+        get() = items.isEmpty()
+}
+
+/**
+ * ダウンロード履歴（処理済みのみ）
+ */
+data class DownloadHistory(
+    val items: List<DownloadHistoryItem> = emptyList()
+) {
+    val completedCount: Int
+        get() = items.count { it.status == DownloadHistoryStatus.COMPLETED }
+
+    val failedCount: Int
+        get() = items.count { it.status == DownloadHistoryStatus.FAILED }
+
+    val cancelledCount: Int
+        get() = items.count { it.status == DownloadHistoryStatus.CANCELLED }
+
+    val totalCount: Int
+        get() = items.size
+
+    val isEmpty: Boolean
+        get() = items.isEmpty()
+}
+
+/**
+ * 従来のダウンロード進捗（互換性のため）
  */
 data class DownloadProgressInfo(
     val downloadId: String,
@@ -112,14 +234,16 @@ sealed class DownloadResult {
 data class DownloadQueueState(
     val activeDownloads: Int = 0,
     val queuedDownloads: Int = 0,
+    val pausedDownloads: Int = 0,
     val completedDownloads: Int = 0,
     val failedDownloads: Int = 0,
+    val cancelledDownloads: Int = 0,
     val totalBytes: Long = 0L,
     val downloadedBytes: Long = 0L,
     val overallSpeed: Double = 0.0 // bytes per second
 ) {
     val totalDownloads: Int
-        get() = activeDownloads + queuedDownloads + completedDownloads + failedDownloads
+        get() = activeDownloads + queuedDownloads + pausedDownloads + completedDownloads + failedDownloads + cancelledDownloads
 
     val overallProgress: Float
         get() = if (totalBytes > 0) (downloadedBytes.toFloat() / totalBytes.toFloat()) else 0f

@@ -2,7 +2,10 @@ package com.celstech.satendroid.download.manager
 
 import android.content.Context
 import com.celstech.satendroid.ui.models.DownloadRequest
+import com.celstech.satendroid.ui.models.DownloadQueue
+import com.celstech.satendroid.ui.models.DownloadHistory
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.Flow
 
 /**
  * DownloadServiceの管理を簡素化するシングルトンマネージャー
@@ -25,9 +28,19 @@ object DownloadServiceManager {
     }
     
     /**
-     * ダウンロード進捗のFlow
+     * ダウンロード進捗のFlow（従来互換性）
      */
     fun getDownloadProgress(context: Context) = getWorkManagerInstance(context).downloadProgress
+    
+    /**
+     * ダウンロードキューのFlow（未処理のみ）
+     */
+    fun getDownloadQueue(context: Context): Flow<DownloadQueue> = getWorkManagerInstance(context).downloadQueue
+    
+    /**
+     * ダウンロード履歴のFlow（処理済みのみ）
+     */
+    fun getDownloadHistory(context: Context): Flow<DownloadHistory> = getWorkManagerInstance(context).downloadHistory
     
     /**
      * キューの状態のFlow
@@ -85,13 +98,27 @@ object DownloadServiceManager {
     }
     
     /**
-     * 失敗したダウンロードを再試行
+     * 失敗したダウンロードを再試行（履歴からキューに戻す）
      */
     suspend fun retryDownload(context: Context, downloadId: String) {
         try {
             getWorkManagerInstance(context).retryDownload(downloadId)
+            println("DEBUG: DownloadServiceManager - Successfully retried: $downloadId")
         } catch (e: Exception) {
             println("DEBUG: DownloadServiceManager - Failed to retry: ${e.message}")
+            throw e
+        }
+    }
+    
+    /**
+     * 履歴から失敗したダウンロードを削除
+     */
+    suspend fun removeFromHistory(context: Context, downloadId: String) {
+        try {
+            getWorkManagerInstance(context).removeFromHistory(downloadId)
+            println("DEBUG: DownloadServiceManager - Successfully removed from history: $downloadId")
+        } catch (e: Exception) {
+            println("DEBUG: DownloadServiceManager - Failed to remove from history: ${e.message}")
             throw e
         }
     }

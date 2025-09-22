@@ -12,43 +12,36 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.Pause
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.celstech.satendroid.download.manager.DownloadServiceManager
-import com.celstech.satendroid.ui.components.DownloadProgressCard
-import com.celstech.satendroid.ui.models.DownloadStatus
+import com.celstech.satendroid.ui.components.ActiveDownloadQueueSection
+import com.celstech.satendroid.ui.components.CompletedDownloadHistorySection
+
+import com.celstech.satendroid.ui.models.DownloadQueue
+import com.celstech.satendroid.ui.models.DownloadHistory
 import com.celstech.satendroid.utils.FormatUtils
 import kotlinx.coroutines.launch
 
 /**
- * ダウンロードキュー管理画面 - DownloadServiceManager統合版
+ * ダウンロードキュー管理画面 - 分離設計版
+ * 未処理キューと処理済み履歴を明確に分離
  */
 @Composable
 fun DownloadQueueScreen(
@@ -59,15 +52,10 @@ fun DownloadQueueScreen(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     
-    // DownloadServiceManagerの状態を監視
-    val downloadProgressFlow = DownloadServiceManager.getDownloadProgress(context)
-    val queueStateFlow = DownloadServiceManager.getQueueState(context)
-    
-    // 状態を監視
-    val queueState by queueStateFlow.collectAsState()
-    val downloadProgress by downloadProgressFlow.collectAsState()
-    
-    // 初期化（WorkManagerでは自動的に開始されるため特別な処理は不要）
+    // 分離されたデータフローを監視
+    val downloadQueue by DownloadServiceManager.getDownloadQueue(context).collectAsState(initial = DownloadQueue())
+    val downloadHistory by DownloadServiceManager.getDownloadHistory(context).collectAsState(initial = DownloadHistory())
+    val queueState by DownloadServiceManager.getQueueState(context).collectAsState(initial = com.celstech.satendroid.ui.models.DownloadQueueState())
 
     Box(
         modifier = modifier
@@ -98,7 +86,7 @@ fun DownloadQueueScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Download Queue",
+                        text = "Download Manager",
                         style = MaterialTheme.typography.headlineSmall
                     )
 
@@ -145,7 +133,7 @@ fun DownloadQueueScreen(
                                 )
 
                                 Text(
-                                    text = "${queueState.completedDownloads + queueState.activeDownloads}/${queueState.totalDownloads}",
+                                    text = "${queueState.activeDownloads + queueState.completedDownloads}/${queueState.totalDownloads}",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
@@ -208,6 +196,13 @@ fun DownloadQueueScreen(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
                                 )
+                                if (queueState.pausedDownloads > 0) {
+                                    Text(
+                                        text = "Paused: ${queueState.pausedDownloads}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                                    )
+                                }
                                 Text(
                                     text = "Completed: ${queueState.completedDownloads}",
                                     style = MaterialTheme.typography.bodySmall,
@@ -225,121 +220,67 @@ fun DownloadQueueScreen(
                     }
 
                     Spacer(modifier = Modifier.height(16.dp))
-
-                    // 制御ボタン
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        if (queueState.activeDownloads > 0) {
-                            OutlinedButton(
-                                onClick = {
-                                    coroutineScope.launch {
-                                        DownloadServiceManager.pauseAll(context)
-                                    }
-                                },
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(Icons.Default.Pause, contentDescription = null)
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Pause All")
-                            }
-                        }
-
-                        if (queueState.completedDownloads > 0) {
-                            OutlinedButton(
-                                onClick = {
-                                    coroutineScope.launch {
-                                        DownloadServiceManager.clearCompleted(context)
-                                    }
-                                },
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(Icons.Default.Clear, contentDescription = null)
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Clear Completed")
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
                 }
 
-                // ダウンロード一覧
-                when {
-                    downloadProgress.isEmpty() -> {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant
-                            )
-                        ) {
-                            Text(
-                                text = "No downloads in queue",
-                                modifier = Modifier.padding(32.dp),
-                                textAlign = TextAlign.Center,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    else -> {
-                        LazyColumn(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            // ダウンロード中・キューイング中を先に表示
-                            val activeItems = downloadProgress.values
-                                .filter { it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.QUEUED || it.status == DownloadStatus.PAUSED }
-                                .sortedWith(compareBy<com.celstech.satendroid.ui.models.DownloadProgressInfo> { 
-                                    when (it.status) {
-                                        DownloadStatus.DOWNLOADING -> 0
-                                        DownloadStatus.PAUSED -> 1
-                                        DownloadStatus.QUEUED -> 2
-                                        else -> 3
-                                    }
-                                }.thenBy { it.startTime })
-
-                            // 完了・失敗・キャンセル済みを後に表示
-                            val inactiveItems = downloadProgress.values
-                                .filter { it.status == DownloadStatus.COMPLETED || it.status == DownloadStatus.FAILED || it.status == DownloadStatus.CANCELLED }
-                                .sortedWith(compareBy<com.celstech.satendroid.ui.models.DownloadProgressInfo> { 
-                                    when (it.status) {
-                                        DownloadStatus.FAILED -> 0
-                                        DownloadStatus.CANCELLED -> 1
-                                        DownloadStatus.COMPLETED -> 2
-                                        else -> 3
-                                    }
-                                }.thenByDescending { it.completedTime ?: it.startTime })
-
-                            items(activeItems + inactiveItems) { progress ->
-                                DownloadProgressCard(
-                                    progress = progress,
-                                    onCancel = {
-                                        coroutineScope.launch {
-                                            DownloadServiceManager.cancelDownload(context, progress.downloadId)
-                                        }
-                                    },
-                                    onPause = {
-                                        coroutineScope.launch {
-                                            DownloadServiceManager.pauseDownload(context, progress.downloadId)
-                                        }
-                                    },
-                                    onResume = {
-                                        coroutineScope.launch {
-                                            DownloadServiceManager.resumeDownload(context, progress.downloadId)
-                                        }
-                                    },
-                                    onRetry = {
-                                        coroutineScope.launch {
-                                            DownloadServiceManager.retryDownload(context, progress.downloadId)
-                                        }
-                                    }
-                                )
+                // スクロール可能なコンテンツエリア
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // 1. アクティブなダウンロードキューセクション
+                    ActiveDownloadQueueSection(
+                        queue = downloadQueue,
+                        onCancel = { downloadId ->
+                            coroutineScope.launch {
+                                DownloadServiceManager.cancelDownload(context, downloadId)
+                            }
+                        },
+                        onPause = { downloadId ->
+                            coroutineScope.launch {
+                                DownloadServiceManager.pauseDownload(context, downloadId)
+                            }
+                        },
+                        onResume = { downloadId ->
+                            coroutineScope.launch {
+                                DownloadServiceManager.resumeDownload(context, downloadId)
+                            }
+                        },
+                        onPauseAll = {
+                            coroutineScope.launch {
+                                DownloadServiceManager.pauseAll(context)
+                            }
+                        },
+                        onCancelAll = {
+                            coroutineScope.launch {
+                                // 全てのアクティブなダウンロードをキャンセル
+                                downloadQueue.items.forEach { item ->
+                                    DownloadServiceManager.cancelDownload(context, item.downloadId)
+                                }
                             }
                         }
-                    }
+                    )
+
+                    // 2. 完了したダウンロード履歴セクション
+                    CompletedDownloadHistorySection(
+                        history = downloadHistory,
+                        onRetry = { downloadId ->
+                            coroutineScope.launch {
+                                DownloadServiceManager.retryDownload(context, downloadId)
+                            }
+                        },
+                        onRemove = { downloadId ->
+                            coroutineScope.launch {
+                                DownloadServiceManager.removeFromHistory(context, downloadId)
+                            }
+                        },
+                        onClearHistory = {
+                            coroutineScope.launch {
+                                DownloadServiceManager.clearCompleted(context)
+                            }
+                        },
+                        // 履歴が少ない場合は初期展開、多い場合は折りたたみ
+                        initialExpanded = downloadHistory.totalCount <= 5
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))

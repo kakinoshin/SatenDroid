@@ -20,9 +20,9 @@ sealed class DropboxItem {
 }
 
 /**
- * ダウンロード進捗を追跡するためのデータクラス
+ * Dropboxダウンロード進捗を追跡するためのデータクラス
  */
-data class DownloadProgress(
+data class DropboxDownloadProgress(
     val fileName: String = "",
     val currentFileProgress: Float = 0f, // 0.0 to 1.0
     val currentFileIndex: Int = 0,
