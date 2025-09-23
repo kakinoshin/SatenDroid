@@ -73,6 +73,7 @@ fun DropboxScreen(
     // DropboxDownloadServiceManagerの状態を監視
     val queueStateFlow = DownloadServiceManager.getQueueState(context)
     val queueState by queueStateFlow.collectAsState()
+    val downloadQueue by DownloadServiceManager.getDownloadQueue(context).collectAsState(initial = com.celstech.satendroid.ui.models.DownloadQueue())
 
     // Function to add single file to download queue
     fun addToDownloadQueue(item: DropboxItem.ZipFile) {
@@ -302,7 +303,7 @@ fun DropboxScreen(
                         // Download Queue button
                         if (queueState.isActive || queueState.totalDownloads > 0) {
                             TextButton(onClick = onOpenDownloadQueue) {
-                                Text("📥 Queue (${queueState.activeDownloads + queueState.queuedDownloads})")
+                                Text("📥 Queue (${downloadQueue.items.size})")
                             }
                         }
 

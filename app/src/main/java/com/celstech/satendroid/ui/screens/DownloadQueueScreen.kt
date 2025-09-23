@@ -133,7 +133,7 @@ fun DownloadQueueScreen(
                                 )
 
                                 Text(
-                                    text = "${queueState.activeDownloads + queueState.completedDownloads}/${queueState.totalDownloads}",
+                                    text = "${queueState.activeDownloads + queueState.completedDownloads}/${downloadQueue.totalCount + downloadHistory.totalCount}",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
