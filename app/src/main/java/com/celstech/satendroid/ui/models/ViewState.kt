@@ -17,6 +17,15 @@ sealed class ViewState {
 }
 
 /**
+ * ヘッダーの展開状態を管理するenum
+ */
+enum class HeaderState {
+    COLLAPSED,    // 折りたたまれた状態
+    EXPANDED,     // 展開された状態
+    TRANSITIONING // アニメーション中
+}
+
+/**
  * 画像ビューアの状態を管理するデータクラス
  */
 data class ImageViewerState(

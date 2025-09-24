@@ -12,6 +12,7 @@ import com.celstech.satendroid.ui.models.LocalFileUiState
 import com.celstech.satendroid.ui.models.LocalItem
 import com.celstech.satendroid.ui.models.ReadingFilterType
 import com.celstech.satendroid.ui.models.ReadingStatus
+import com.celstech.satendroid.ui.models.HeaderState
 import com.celstech.satendroid.utils.DirectZipImageHandler
 import com.celstech.satendroid.utils.SimpleReadingDataManager
 import com.celstech.satendroid.utils.ReadingProgress
@@ -67,6 +68,29 @@ class LocalFileViewModel(
      */
     fun getReadingProgress(filePath: String): ReadingProgress {
         return _readingStates[filePath] ?: readingDataManager.getReadingProgress(filePath)
+    }
+
+    // Header state management
+    fun setHeaderState(headerState: HeaderState) {
+        _uiState.value = _uiState.value.copy(headerState = headerState)
+    }
+
+    fun toggleHeaderState() {
+        val currentState = _uiState.value.headerState
+        val newState = when (currentState) {
+            HeaderState.COLLAPSED -> HeaderState.EXPANDED
+            HeaderState.EXPANDED -> HeaderState.COLLAPSED
+            HeaderState.TRANSITIONING -> currentState // アニメーション中は状態変更しない
+        }
+        setHeaderState(newState)
+    }
+
+    fun expandHeader() {
+        setHeaderState(HeaderState.EXPANDED)
+    }
+
+    fun collapseHeader() {
+        setHeaderState(HeaderState.COLLAPSED)
     }
 
     // Filter functionality

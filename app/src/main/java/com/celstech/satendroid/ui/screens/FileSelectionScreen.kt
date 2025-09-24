@@ -10,42 +10,38 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.celstech.satendroid.ui.components.AdaptiveHeader
 import com.celstech.satendroid.ui.components.DeleteFileWithPermission
 import com.celstech.satendroid.ui.components.LocalItemCard
+import com.celstech.satendroid.ui.components.SwipeableHeader
 import com.celstech.satendroid.ui.models.LocalItem
 import com.celstech.satendroid.ui.models.ReadingFilterType
+import com.celstech.satendroid.ui.models.HeaderState
 import com.celstech.satendroid.viewmodel.LocalFileViewModel
+import kotlinx.coroutines.launch
 import java.io.File
 
 /**
@@ -66,6 +62,7 @@ fun FileSelectionScreen(
     fileCompletionUpdate: File? = null
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val viewModel: LocalFileViewModel = viewModel(
         factory = LocalFileViewModel.provideFactory(context)
     )
@@ -148,7 +145,7 @@ fun FileSelectionScreen(
                 }
 
                 // 最後のページまで読んだとして既読にマーク
-                val lastPage = if (totalImageCount > 0) totalImageCount - 1 else 0
+                val lastPage = totalImageCount - 1
 
                 // totalImageCountが正しくない場合は更新
                 if (zipFileItem.totalImageCount != totalImageCount) {
@@ -179,248 +176,132 @@ fun FileSelectionScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .padding(16.dp)
     ) {
-        // Header
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column {
-                Text(
-                    text = "SatenDroid",
-                    style = MaterialTheme.typography.headlineLarge,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-
-                Text(
-                    text = "ZIP Image Viewer",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
-                )
-            }
-
-            TextButton(
-                onClick = onOpenSettings,
-                enabled = !isLoading
-            ) {
-                Text("⚙️ 設定")
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Action buttons
-        Column {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Button(
-                    onClick = onOpenFromDevice,
-                    modifier = Modifier.weight(1f),
-                    enabled = !isLoading
-                ) {
-                    Text("📱 Open from Device")
-                }
-
-                OutlinedButton(
-                    onClick = onOpenFromDropbox,
-                    modifier = Modifier.weight(1f),
-                    enabled = !isLoading
-                ) {
-                    Text("☁️ Open from Dropbox")
-                }
-            }
-            
-            Spacer(modifier = Modifier.height(8.dp))
-            
-            OutlinedButton(
-                onClick = onOpenDownloadQueue,
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !isLoading
-            ) {
-                Text("📥 Download Queue")
-            }
-        }
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        // Compact Filter UI - Only show when files exist
-        if (uiState.localItems.isNotEmpty()) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Filter display
-                val filterDisplayText = when (uiState.filterType) {
-                    ReadingFilterType.ALL -> "すべて"
-                    ReadingFilterType.HIDE_COMPLETED -> "既読を非表示"
-                    ReadingFilterType.UNREAD -> "未読のみ"
-                    ReadingFilterType.READING -> "読書中のみ"
-                    ReadingFilterType.COMPLETED -> "既読のみ"
-                }
-
-                Text(
-                    text = "📁 フィルター: $filterDisplayText",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-
-                // Filter menu
-                var showFilterMenu by remember { mutableStateOf(false) }
-
-                Box {
-                    IconButton(onClick = { showFilterMenu = true }) {
-                        Icon(
-                            imageVector = Icons.Default.FilterList,
-                            contentDescription = "フィルター",
-                            tint = if (uiState.filterType != ReadingFilterType.ALL) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurface
-                            }
-                        )
-                    }
-
-                    DropdownMenu(
-                        expanded = showFilterMenu,
-                        onDismissRequest = { showFilterMenu = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("すべて") },
-                            onClick = {
-                                viewModel.setReadingFilter(ReadingFilterType.ALL)
-                                showFilterMenu = false
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("既読を非表示") },
-                            onClick = {
-                                viewModel.setReadingFilter(ReadingFilterType.HIDE_COMPLETED)
-                                showFilterMenu = false
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("未読のみ") },
-                            onClick = {
-                                viewModel.setReadingFilter(ReadingFilterType.UNREAD)
-                                showFilterMenu = false
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("読書中のみ") },
-                            onClick = {
-                                viewModel.setReadingFilter(ReadingFilterType.READING)
-                                showFilterMenu = false
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("既読のみ") },
-                            onClick = {
-                                viewModel.setReadingFilter(ReadingFilterType.COMPLETED)
-                                showFilterMenu = false
-                            }
-                        )
+        // 新しいスワイプ対応ヘッダー
+        SwipeableHeader(
+            headerState = uiState.headerState,
+            onHeaderStateChange = { newState ->
+                viewModel.setHeaderState(newState)
+            },
+            onCollapseAfterDelay = {
+                if (uiState.headerState == HeaderState.EXPANDED) {
+                    coroutineScope.launch {
+                        viewModel.collapseHeader()
                     }
                 }
+            },
+            content = {
+                AdaptiveHeader(
+                    headerState = uiState.headerState,
+                    currentPath = uiState.currentPath,
+                    filterType = uiState.filterType,
+                    isLoading = isLoading || uiState.isRefreshing,
+                    hasFiles = uiState.localItems.isNotEmpty(),
+                    onSettingsClick = onOpenSettings,
+                    onDeviceClick = onOpenFromDevice,
+                    onDropboxClick = onOpenFromDropbox,
+                    onDownloadQueueClick = onOpenDownloadQueue,
+                    onFilterTypeChange = viewModel::setReadingFilter,
+                    onRefreshClick = { viewModel.scanDirectory(uiState.currentPath) }
+                )
             }
+        )
 
-            // Display count (compact)
-            if (uiState.filterType != ReadingFilterType.ALL) {
-                val displayItems = viewModel.getDisplayItems()
-                val zipFileCount = displayItems.filterIsInstance<LocalItem.ZipFile>().size
-                val totalZipFileCount =
-                    uiState.localItems.filterIsInstance<LocalItem.ZipFile>().size
+        // フィルター表示統計（コンパクト版、ファイルがある場合のみ）
+        if (uiState.localItems.isNotEmpty() && uiState.filterType != ReadingFilterType.ALL) {
+            val displayItems = viewModel.getDisplayItems()
+            val zipFileCount = displayItems.filterIsInstance<LocalItem.ZipFile>().size
+            val totalZipFileCount = uiState.localItems.filterIsInstance<LocalItem.ZipFile>().size
 
+            if (zipFileCount != totalZipFileCount) {
                 Text(
                     text = "📊 表示中: $zipFileCount/$totalZipFileCount ファイル",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                    modifier = Modifier.padding(horizontal = 4.dp)
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
                 )
             }
-
-            Spacer(modifier = Modifier.height(16.dp))
         }
 
-        // Navigation bar
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            if (uiState.isSelectionMode) {
-                // Selection mode toolbar
+        // 選択モード時のツールバー（選択モード時のみ表示）
+        if (uiState.isSelectionMode) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer
+                )
+            ) {
                 Row(
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    TextButton(onClick = { viewModel.exitSelectionMode() }) {
-                        Text("✕ Cancel")
-                    }
-
-                    Text(
-                        text = "${uiState.selectedItems.size} selected",
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(horizontal = 8.dp)
-                    )
-
-                    Spacer(modifier = Modifier.weight(1f))
-
-                    if (uiState.selectedItems.size == viewModel.getDisplayItems().size && viewModel.getDisplayItems()
-                            .isNotEmpty()
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        TextButton(onClick = { viewModel.deselectAll() }) {
-                            Text("Deselect All")
+                        TextButton(onClick = { viewModel.exitSelectionMode() }) {
+                            Text("✕ キャンセル")
                         }
-                    } else if (viewModel.getDisplayItems().isNotEmpty()) {
-                        TextButton(onClick = { viewModel.selectAll() }) {
-                            Text("Select All")
-                        }
+
+                        Spacer(modifier = Modifier.width(12.dp))
+
+                        Text(
+                            text = "${uiState.selectedItems.size} 選択中",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
                     }
 
-                    if (uiState.selectedItems.isNotEmpty()) {
-                        Button(
-                            onClick = { viewModel.setShowDeleteConfirmDialog(true) },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.error
-                            ),
-                            modifier = Modifier.padding(start = 8.dp)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (uiState.selectedItems.size == viewModel.getDisplayItems().size && viewModel.getDisplayItems()
+                                .isNotEmpty()
                         ) {
-                            Text("🗑️ Delete (${uiState.selectedItems.size})")
+                            TextButton(onClick = { viewModel.deselectAll() }) {
+                                Text("すべて解除")
+                            }
+                        } else if (viewModel.getDisplayItems().isNotEmpty()) {
+                            TextButton(onClick = { viewModel.selectAll() }) {
+                                Text("すべて選択")
+                            }
+                        }
+
+                        if (uiState.selectedItems.isNotEmpty()) {
+                            Button(
+                                onClick = { viewModel.setShowDeleteConfirmDialog(true) },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error
+                                )
+                            ) {
+                                Text("🗑️ 削除 (${uiState.selectedItems.size})")
+                            }
                         }
                     }
                 }
-            } else {
-                // Normal navigation bar
-                if (uiState.currentPath.isNotEmpty()) {
+            }
+        } else {
+            // ナビゲーション情報（通常モード時、必要に応じて）
+            if (uiState.currentPath.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Button(
                         onClick = { viewModel.navigateBack() },
                         modifier = Modifier.padding(end = 8.dp)
                     ) {
-                        Text("← Back")
+                        Text("← 戻る")
                     }
-                }
-
-                Text(
-                    text = if (uiState.currentPath.isEmpty()) "📁 Local Files" else "📁 ${uiState.currentPath}",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onBackground,
-                    modifier = Modifier.weight(1f)
-                )
-
-                TextButton(
-                    onClick = { viewModel.scanDirectory(uiState.currentPath) },
-                    enabled = !uiState.isRefreshing
-                ) {
-                    Text("🔄 Refresh")
                 }
             }
         }
-
-        Spacer(modifier = Modifier.height(12.dp))
 
         when {
             isLoading -> {

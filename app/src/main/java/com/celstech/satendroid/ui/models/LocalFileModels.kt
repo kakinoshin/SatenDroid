@@ -38,7 +38,8 @@ data class LocalFileUiState(
     val showDeleteConfirmDialog: Boolean = false,
     val itemToDelete: LocalItem? = null,
     val showDeleteZipWithPermissionDialog: Boolean = false,
-    val filterType: ReadingFilterType = ReadingFilterType.ALL
+    val filterType: ReadingFilterType = ReadingFilterType.ALL,
+    val headerState: HeaderState = HeaderState.COLLAPSED
 )
 
 // Data models
