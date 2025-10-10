@@ -56,10 +56,7 @@ fun FileSelectionScreen(
     onOpenFromDropbox: () -> Unit,
     onOpenDownloadQueue: () -> Unit,
     onOpenSettings: () -> Unit,
-    isLoading: Boolean,
-    onReturnFromViewer: (() -> Unit)? = null,
-    readingStatusUpdate: Pair<File, Int>? = null,
-    fileCompletionUpdate: File? = null
+    isLoading: Boolean
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -68,104 +65,15 @@ fun FileSelectionScreen(
     )
     val uiState by viewModel.uiState.collectAsState()
 
-    // SimpleReadingDataManagerで初期化と読み込み - Phase 2拡張
+    // 初期化と読み込み
     LaunchedEffect(Unit) {
         viewModel.scanDirectory(initialPath)
         viewModel.initializeCloudProviders()
     }
 
-    // 画像ビューアーから戻ってきたときの処理
-    LaunchedEffect(onReturnFromViewer) {
-        onReturnFromViewer?.let {
-            viewModel.onReturnFromImageViewer()
-            it() // コールバックを実行
-        }
-    }
-
-    // 読書状態の更新処理（改良版）
-    LaunchedEffect(readingStatusUpdate) {
-        readingStatusUpdate?.let { (file, currentPage) ->
-            println("DEBUG: FileSelectionScreen - Updating reading status for ${file.name} at page ${currentPage + 1}")
-
-            // ファイルパスからLocalItem.ZipFileを検索
-            val zipFileItem = uiState.localItems.find { item ->
-                item is LocalItem.ZipFile && item.file.absolutePath == file.absolutePath
-            } as? LocalItem.ZipFile
-
-            if (zipFileItem != null) {
-                // 総画像数を確実に設定
-                val totalImageCount = if (zipFileItem.totalImageCount > 0) {
-                    zipFileItem.totalImageCount
-                } else {
-                    // SimpleReadingDataManagerから取得を試行
-                    viewModel.readingDataManager.getTotalPages(file.absolutePath).takeIf { it > 0 }
-                        ?: (currentPage + 1)
-                }
-
-                // totalImageCountが正しくない場合は更新
-                if (zipFileItem.totalImageCount != totalImageCount) {
-                    // LocalItem.ZipFileを更新（immutableなので新しいインスタンスを作成）
-                    val updatedZipFile = zipFileItem.copy(totalImageCount = totalImageCount)
-
-                    // ViewModelに更新を通知
-                    viewModel.updateReadingStatus(updatedZipFile, currentPage)
-                } else {
-                    viewModel.updateReadingStatus(zipFileItem, currentPage)
-                }
-
-                println("DEBUG: Reading status updated successfully - Total images: $totalImageCount")
-            } else {
-                println("DEBUG: Could not find LocalItem.ZipFile for ${file.name}")
-                println(
-                    "DEBUG: Available items: ${
-                        uiState.localItems.filterIsInstance<LocalItem.ZipFile>().map { it.name }
-                    }"
-                )
-            }
-        }
-    }
-
-    // ファイル完了マーク処理（次のファイルに移動時に既読にマーク）（改良版）
-    LaunchedEffect(fileCompletionUpdate) {
-        fileCompletionUpdate?.let { file ->
-            println("DEBUG: FileSelectionScreen - Marking file as completed: ${file.name}")
-
-            // ファイルパスからLocalItem.ZipFileを検索
-            val zipFileItem = uiState.localItems.find { item ->
-                item is LocalItem.ZipFile && item.file.absolutePath == file.absolutePath
-            } as? LocalItem.ZipFile
-
-            if (zipFileItem != null) {
-                // 総画像数を確実に取得
-                val totalImageCount = if (zipFileItem.totalImageCount > 0) {
-                    zipFileItem.totalImageCount
-                } else {
-                    // SimpleReadingDataManagerから取得を試行
-                    viewModel.readingDataManager.getTotalPages(file.absolutePath).takeIf { it > 0 }
-                        ?: 1
-                }
-
-                // 最後のページまで読んだとして既読にマーク
-                val lastPage = totalImageCount - 1
-
-                // totalImageCountが正しくない場合は更新
-                if (zipFileItem.totalImageCount != totalImageCount) {
-                    val updatedZipFile = zipFileItem.copy(totalImageCount = totalImageCount)
-                    viewModel.updateReadingStatus(updatedZipFile, lastPage)
-                } else {
-                    viewModel.updateReadingStatus(zipFileItem, lastPage)
-                }
-
-                println("DEBUG: File marked as completed successfully - Total images: $totalImageCount, Last page: $lastPage")
-            } else {
-                println("DEBUG: Could not find LocalItem.ZipFile for completion marking: ${file.name}")
-                println(
-                    "DEBUG: Available items: ${
-                        uiState.localItems.filterIsInstance<LocalItem.ZipFile>().map { it.name }
-                    }"
-                )
-            }
-        }
+    // 画像ビューアーから戻ってきたときの処理（廃止予定）
+    LaunchedEffect(Unit) {
+        // 何もしない（StateFlowで自動更新されるため）
     }
 
     // ディレクトリパスが変更されたときに通知
@@ -458,8 +366,6 @@ fun FileSelectionScreen(
                                                 )
 
                                                 is LocalItem.ZipFile -> {
-                                                    // ZIPファイルを開く前に読書状態を更新
-                                                    viewModel.onZipFileOpened(item)
                                                     onFileSelected(item.file)
                                                 }
                                             }

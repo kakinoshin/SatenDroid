@@ -1,6 +1,7 @@
 package com.celstech.satendroid.viewmodel
 
 import android.content.Context
+import androidx.compose.runtime.Composable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -18,22 +19,41 @@ import com.celstech.satendroid.ui.models.CloudProviderInfo
 import com.celstech.satendroid.ui.models.ConnectionStatus
 import com.celstech.satendroid.ui.models.PendingHeaderAction
 import com.celstech.satendroid.utils.DirectZipImageHandler
-import com.celstech.satendroid.utils.SimpleReadingDataManager
-import com.celstech.satendroid.utils.ReadingProgress
+import com.celstech.satendroid.utils.ReadingStateManager
+import com.celstech.satendroid.utils.ReadingState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import androidx.compose.runtime.mutableStateMapOf
-import androidx.compose.runtime.snapshots.SnapshotStateMap
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
- * ローカルファイル管理のViewModel（シンプル化版）
+ * ファイル操作のState Machine状態
+ */
+sealed class FileOperationState {
+    object Idle : FileOperationState()
+    data class ClosingFile(val filePath: String) : FileOperationState()
+    object SavingData : FileOperationState()
+    data class OpeningFile(val filePath: String) : FileOperationState()
+}
+
+/**
+ * ファイル操作の待機キュー
+ */
+sealed class PendingFileOperation {
+    data class CloseFile(val filePath: String, val currentPage: Int, val totalPages: Int) : PendingFileOperation()
+    data class OpenFile(val filePath: String) : PendingFileOperation()
+}
+
+/**
+ * ローカルファイル管理のViewModel - 再設計版
  *
- * 変更点:
- * - SimpleReadingDataManagerを使用
- * - 単一キャッシュレイヤー
- * - 即座保存
+ * 設計原則:
+ * 1. ReadingStateManagerを唯一の状態管理・永続化責任者とする
+ * 2. State Machineで操作順序を保証
+ * 3. UIは参照のみ、更新はViewModelを経由
+ * 4. 処理中はユーザーに通知
  */
 class LocalFileViewModel(
     private val repository: LocalFileRepository,
@@ -41,50 +61,207 @@ class LocalFileViewModel(
     private val selectionManager: SelectionManager,
     val directZipHandler: DirectZipImageHandler,
     private val fileNavigationManager: FileNavigationManager,
-    val readingDataManager: SimpleReadingDataManager // 新システム（public）
+    val readingStateManager: ReadingStateManager
 ) : ViewModel() {
 
     // UI state
     private val _uiState = MutableStateFlow(LocalFileUiState())
     val uiState: StateFlow<LocalFileUiState> = _uiState.asStateFlow()
 
-    // 単一キャッシュレイヤー（ReadingProgress形式）
-    private val _readingStates = mutableStateMapOf<String, ReadingProgress>()
-    val readingStates: SnapshotStateMap<String, ReadingProgress> = _readingStates
+    // State Machine状態
+    private val _fileOperationState = MutableStateFlow<FileOperationState>(FileOperationState.Idle)
+    val fileOperationState: StateFlow<FileOperationState> = _fileOperationState.asStateFlow()
+
+    // 待機キュー
+    private val pendingOperations = mutableListOf<PendingFileOperation>()
+    private val operationMutex = Mutex()
+
+    // エラーメッセージ
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
     /**
-     * ファイルの読書状態をメモリキャッシュに読み込み
+     * 読書状態を取得（UIから呼び出される）
      */
-    private fun loadReadingStatesForFiles(items: List<LocalItem>) {
-        items.filterIsInstance<LocalItem.ZipFile>().forEach { zipFile ->
-            try {
-                val progress = readingDataManager.getReadingProgress(zipFile.file.absolutePath)
-                _readingStates[zipFile.file.absolutePath] = progress
-                println("DEBUG: ViewModel loaded reading state - File: ${zipFile.name}, Status: ${progress.status}, Position: ${progress.currentIndex}")
-            } catch (e: Exception) {
-                println("ERROR: Failed to load reading state for ${zipFile.name}: ${e.message}")
+    fun getReadingState(filePath: String): ReadingState {
+        return readingStateManager.getState(filePath)
+    }
+
+    /**
+     * 読書進捗をStateとして取得（Compose用）
+     */
+    @Composable
+    fun getReadingProgressState(filePath: String): androidx.compose.runtime.State<com.celstech.satendroid.utils.ReadingProgress?> {
+        return androidx.compose.runtime.remember(filePath) {
+            androidx.compose.runtime.derivedStateOf {
+                val state = readingStateManager.getState(filePath)
+                com.celstech.satendroid.utils.ReadingProgress(
+                    status = state.status,
+                    currentIndex = state.currentPage
+                )
             }
         }
     }
 
     /**
-     * 読書進捗を取得（高速メモリアクセス）
+     * ページを更新（RAM上のみ、保存はしない）
      */
-    fun getReadingProgress(filePath: String): ReadingProgress {
-        return _readingStates[filePath] ?: readingDataManager.getReadingProgress(filePath)
+    fun updateCurrentPage(filePath: String, page: Int, totalPages: Int) {
+        readingStateManager.updateCurrentPage(filePath, page, totalPages)
+        
+        // フィルターが適用されている場合は再適用
+        val currentState = _uiState.value
+        if (currentState.filterType != ReadingFilterType.ALL) {
+            val filteredItems = applyReadingFilter(currentState.localItems, currentState.filterType)
+            _uiState.value = currentState.copy(filteredLocalItems = filteredItems)
+        }
     }
 
-    // Header state management - Phase 2拡張
+    /**
+     * ファイルを閉じる（State Machine制御）
+     */
+    fun closeFile(filePath: String, currentPage: Int, totalPages: Int) {
+        viewModelScope.launch {
+            operationMutex.withLock {
+                // すでに処理中の場合は待機キューに追加
+                if (_fileOperationState.value !is FileOperationState.Idle) {
+                    pendingOperations.add(PendingFileOperation.CloseFile(filePath, currentPage, totalPages))
+                    println("DEBUG: File close operation queued: $filePath")
+                    return@launch
+                }
+
+                executeCloseFile(filePath, currentPage, totalPages)
+            }
+        }
+    }
+
+    /**
+     * ファイルを閉じる処理を実行
+     */
+    private suspend fun executeCloseFile(filePath: String, currentPage: Int, totalPages: Int) {
+        try {
+            // State: Idle → ClosingFile
+            _fileOperationState.value = FileOperationState.ClosingFile(filePath)
+            println("DEBUG: State Machine: Idle → ClosingFile($filePath)")
+
+            // 現在のページ情報をRAMに更新
+            readingStateManager.updateCurrentPage(filePath, currentPage, totalPages)
+
+            // State: ClosingFile → SavingData
+            _fileOperationState.value = FileOperationState.SavingData
+            println("DEBUG: State Machine: ClosingFile → SavingData")
+
+            // 同期保存を実行
+            val result = readingStateManager.saveStateSync(filePath)
+
+            result.onSuccess {
+                println("DEBUG: File closed and saved successfully: $filePath")
+                _errorMessage.value = null
+            }.onFailure { error ->
+                println("ERROR: Failed to save reading state: ${error.message}")
+                _errorMessage.value = "保存に失敗しました: ${error.message}"
+            }
+
+            // State: SavingData → Idle
+            _fileOperationState.value = FileOperationState.Idle
+            println("DEBUG: State Machine: SavingData → Idle")
+
+            // 待機キューの処理
+            processNextOperation()
+
+        } catch (e: Exception) {
+            println("ERROR: Exception during closeFile: ${e.message}")
+            e.printStackTrace()
+            _errorMessage.value = "エラーが発生しました: ${e.message}"
+            _fileOperationState.value = FileOperationState.Idle
+        }
+    }
+
+    /**
+     * ファイルを開く（State Machine制御）
+     */
+    fun openFile(filePath: String) {
+        viewModelScope.launch {
+            operationMutex.withLock {
+                // すでに処理中の場合は待機キューに追加
+                if (_fileOperationState.value !is FileOperationState.Idle) {
+                    pendingOperations.add(PendingFileOperation.OpenFile(filePath))
+                    println("DEBUG: File open operation queued: $filePath")
+                    return@launch
+                }
+
+                executeOpenFile(filePath)
+            }
+        }
+    }
+
+    /**
+     * ファイルを開く処理を実行
+     */
+    private suspend fun executeOpenFile(filePath: String) {
+        try {
+            // State: Idle → OpeningFile
+            _fileOperationState.value = FileOperationState.OpeningFile(filePath)
+            println("DEBUG: State Machine: Idle → OpeningFile($filePath)")
+
+            // 既存データをメモリキャッシュに読み込み
+            readingStateManager.loadStateToCache(filePath)
+            
+            val state = readingStateManager.getState(filePath)
+            println("DEBUG: File opened - Status: ${state.status}, Page: ${state.currentPage}/${state.totalPages}")
+
+            // State: OpeningFile → Idle
+            _fileOperationState.value = FileOperationState.Idle
+            println("DEBUG: State Machine: OpeningFile → Idle")
+
+            // 待機キューの処理
+            processNextOperation()
+
+        } catch (e: Exception) {
+            println("ERROR: Exception during openFile: ${e.message}")
+            e.printStackTrace()
+            _errorMessage.value = "ファイルを開けませんでした: ${e.message}"
+            _fileOperationState.value = FileOperationState.Idle
+        }
+    }
+
+    /**
+     * 次の待機操作を処理
+     */
+    private suspend fun processNextOperation() {
+        operationMutex.withLock {
+            if (pendingOperations.isNotEmpty() && _fileOperationState.value is FileOperationState.Idle) {
+                val nextOp = pendingOperations.removeAt(0)
+                println("DEBUG: Processing next operation from queue: $nextOp")
+
+                when (nextOp) {
+                    is PendingFileOperation.CloseFile -> {
+                        executeCloseFile(nextOp.filePath, nextOp.currentPage, nextOp.totalPages)
+                    }
+                    is PendingFileOperation.OpenFile -> {
+                        executeOpenFile(nextOp.filePath)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * エラーメッセージをクリア
+     */
+    fun clearErrorMessage() {
+        _errorMessage.value = null
+    }
+
+    // Header state management
     fun setHeaderState(headerState: HeaderState, trigger: String = "manual") {
         val currentState = _uiState.value
         
-        // 無効化チェック
         if (currentState.isHeaderLocked) {
             println("DEBUG: Header state change blocked - header is locked")
             return
         }
         
-        // アニメーション中の状態変更制限
         if (currentState.isHeaderAnimating && headerState != HeaderState.TRANSITIONING) {
             _uiState.value = currentState.copy(
                 pendingHeaderAction = PendingHeaderAction.ChangeState(headerState)
@@ -107,32 +284,19 @@ class LocalFileViewModel(
         val newState = when (currentState) {
             HeaderState.COLLAPSED, HeaderState.PREVIEW_COLLAPSE -> HeaderState.EXPANDED
             HeaderState.EXPANDED, HeaderState.PREVIEW_EXPAND -> HeaderState.COLLAPSED
-            HeaderState.TRANSITIONING -> return // アニメーション中は状態変更しない
+            HeaderState.TRANSITIONING -> return
         }
         setHeaderState(newState, "toggle")
     }
 
-    fun expandHeader() {
-        setHeaderState(HeaderState.EXPANDED, "expand")
-    }
-
-    fun collapseHeader() {
-        setHeaderState(HeaderState.COLLAPSED, "collapse")
-    }
+    fun expandHeader() = setHeaderState(HeaderState.EXPANDED, "expand")
+    fun collapseHeader() = setHeaderState(HeaderState.COLLAPSED, "collapse")
+    fun autoCollapseHeader() = setHeaderState(HeaderState.COLLAPSED, "auto_collapse")
     
-    fun autoCollapseHeader() {
-        setHeaderState(HeaderState.COLLAPSED, "auto_collapse")
-    }
-    
-    // Phase 2: ヘッダー設定管理
     fun updateHeaderSettings(newSettings: HeaderSettings) {
         val currentState = _uiState.value
         val validatedSettings = newSettings.validate()
-        
-        _uiState.value = currentState.copy(
-            headerSettings = validatedSettings
-        )
-        
+        _uiState.value = currentState.copy(headerSettings = validatedSettings)
         println("DEBUG: Header settings updated")
     }
     
@@ -159,14 +323,13 @@ class LocalFileViewModel(
         }
     }
     
-    // Phase 2: Cloud Provider管理
+    // Cloud Provider管理
     fun refreshCloudProviders(forceRefresh: Boolean = false) {
         viewModelScope.launch {
             try {
                 val currentState = _uiState.value
                 val currentProviders = currentState.cloudProviders
                 
-                // 強制リフレッシュでない場合は、最後の更新時間をチェック
                 val refreshInterval = currentState.headerSettings.providerStatusRefreshInterval
                 val shouldRefresh = forceRefresh || currentProviders.isEmpty() || 
                     currentProviders.any { provider ->
@@ -180,13 +343,8 @@ class LocalFileViewModel(
                     return@launch
                 }
                 
-                // モックプロバイダーデータ（実際の実装では適切なAPIを呼び出し）
                 val updatedProviders = updateCloudProvidersStatus(currentProviders)
-                
-                _uiState.value = currentState.copy(
-                    cloudProviders = updatedProviders
-                )
-                
+                _uiState.value = currentState.copy(cloudProviders = updatedProviders)
                 println("DEBUG: Cloud providers refreshed - ${updatedProviders.size} providers")
                 
             } catch (e: Exception) {
@@ -199,10 +357,7 @@ class LocalFileViewModel(
     private suspend fun updateCloudProvidersStatus(
         currentProviders: List<CloudProviderInfo>
     ): List<CloudProviderInfo> {
-        // 実際の実装では、各プロバイダーの認証状態と接続状態をチェック
-        // ここではモックデータを返す
-        
-        val mockProviders = listOf(
+        return listOf(
             CloudProviderInfo(
                 id = "dropbox",
                 name = "Dropbox",
@@ -225,8 +380,6 @@ class LocalFileViewModel(
                 lastSyncTime = System.currentTimeMillis() - 60000L
             )
         )
-        
-        return mockProviders
     }
     
     fun authenticateCloudProvider(providerId: String) {
@@ -243,8 +396,6 @@ class LocalFileViewModel(
                 }
                 
                 _uiState.value = currentState.copy(cloudProviders = updatedProviders)
-                
-                // 実際の認証処理をシミュレート
                 kotlinx.coroutines.delay(2000)
                 
                 val finalProviders = updatedProviders.map { provider ->
@@ -257,7 +408,6 @@ class LocalFileViewModel(
                 }
                 
                 _uiState.value = _uiState.value.copy(cloudProviders = finalProviders)
-                
                 println("DEBUG: Cloud provider $providerId authenticated successfully")
                 
             } catch (e: Exception) {
@@ -281,20 +431,15 @@ class LocalFileViewModel(
             }
             
             _uiState.value = currentState.copy(cloudProviders = updatedProviders)
-            
             println("DEBUG: Cloud provider $providerId disconnected")
         }
     }
     
-    // 初期化時にCloud Providersを読み込み
     fun initializeCloudProviders() {
         refreshCloudProviders(forceRefresh = true)
     }
 
     // Filter functionality
-    /**
-     * 読書状態フィルターを設定
-     */
     fun setReadingFilter(filterType: ReadingFilterType) {
         val currentState = _uiState.value
         val newFilteredItems = applyReadingFilter(currentState.localItems, filterType)
@@ -302,7 +447,6 @@ class LocalFileViewModel(
         _uiState.value = currentState.copy(
             filterType = filterType,
             filteredLocalItems = newFilteredItems,
-            // フィルター変更時にセレクションモードをリセット
             isSelectionMode = false,
             selectedItems = emptySet()
         )
@@ -310,9 +454,6 @@ class LocalFileViewModel(
         println("DEBUG: Filter applied - Type: $filterType, Items: ${newFilteredItems.size}/${currentState.localItems.size}")
     }
 
-    /**
-     * フィルターロジックの適用
-     */
     private fun applyReadingFilter(
         items: List<LocalItem>,
         filterType: ReadingFilterType
@@ -321,37 +462,31 @@ class LocalFileViewModel(
             ReadingFilterType.ALL -> items
             ReadingFilterType.UNREAD -> items.filter { item ->
                 if (item is LocalItem.ZipFile) {
-                    val progress = getReadingProgress(item.file.absolutePath)
-                    progress.status == ReadingStatus.UNREAD
-                } else true // フォルダは常に表示
+                    val state = getReadingState(item.file.absolutePath)
+                    state.status == ReadingStatus.UNREAD
+                } else true
             }
-
             ReadingFilterType.READING -> items.filter { item ->
                 if (item is LocalItem.ZipFile) {
-                    val progress = getReadingProgress(item.file.absolutePath)
-                    progress.status == ReadingStatus.READING
-                } else false // フォルダは非表示
+                    val state = getReadingState(item.file.absolutePath)
+                    state.status == ReadingStatus.READING
+                } else false
             }
-
             ReadingFilterType.COMPLETED -> items.filter { item ->
                 if (item is LocalItem.ZipFile) {
-                    val progress = getReadingProgress(item.file.absolutePath)
-                    progress.status == ReadingStatus.COMPLETED
-                } else false // フォルダは非表示
+                    val state = getReadingState(item.file.absolutePath)
+                    state.status == ReadingStatus.COMPLETED
+                } else false
             }
-
             ReadingFilterType.HIDE_COMPLETED -> items.filter { item ->
                 if (item is LocalItem.ZipFile) {
-                    val progress = getReadingProgress(item.file.absolutePath)
-                    progress.status != ReadingStatus.COMPLETED // 既読以外を表示
-                } else true // フォルダは常に表示
+                    val state = getReadingState(item.file.absolutePath)
+                    state.status != ReadingStatus.COMPLETED
+                } else true
             }
         }
     }
 
-    /**
-     * 現在表示中のアイテムリストを取得（フィルター適用済み）
-     */
     fun getDisplayItems(): List<LocalItem> {
         val currentState = _uiState.value
         return if (currentState.filterType == ReadingFilterType.ALL) {
@@ -456,8 +591,10 @@ class LocalFileViewModel(
                     isRefreshing = false
                 )
 
-                // メモリキャッシュに読書状態を読み込み
-                loadReadingStatesForFiles(items)
+                // メモリキャッシュに読書状態を一括読み込み
+                items.filterIsInstance<LocalItem.ZipFile>().forEach { zipFile ->
+                    readingStateManager.loadStateToCache(zipFile.file.absolutePath)
+                }
 
                 // 現在のフィルターを再適用
                 val currentFilter = _uiState.value.filterType
@@ -482,9 +619,7 @@ class LocalFileViewModel(
         viewModelScope.launch {
             result = repository.deleteFile(item)
             if (result) {
-                // メモリキャッシュをクリア（読書データは age 機能で後から削除）
-                _readingStates.remove(item.file.absolutePath)
-
+                readingStateManager.clearFileState(item.file.absolutePath)
                 println("DEBUG: File deleted: ${item.file.name}")
             }
         }
@@ -496,9 +631,9 @@ class LocalFileViewModel(
             try {
                 val result = repository.deleteFolder(item)
                 if (result) {
-                    clearCacheForFolder(item.path)
+                    readingStateManager.clearFolderStates(item.path)
+                    directZipHandler.onFolderDeleted(item.path)
                     println("DEBUG: ViewModel - Folder deleted successfully: ${item.name}")
-                    // 削除後にディレクトリを再スキャンして表示を更新
                     scanDirectory(_uiState.value.currentPath)
                 } else {
                     println("DEBUG: ViewModel - Failed to delete folder: ${item.name}")
@@ -514,53 +649,24 @@ class LocalFileViewModel(
         viewModelScope.launch {
             repository.deleteItems(_uiState.value.selectedItems)
 
-            // 削除されたアイテムのメモリキャッシュをクリア（読書データは age 機能で後から削除）
             _uiState.value.selectedItems.forEach { item ->
                 when (item) {
                     is LocalItem.ZipFile -> {
-                        _readingStates.remove(item.file.absolutePath)
-
+                        readingStateManager.clearFileState(item.file.absolutePath)
                         println("DEBUG: File deleted in batch: ${item.file.name}")
                     }
-
                     is LocalItem.Folder -> {
-                        clearCacheForFolder(item.path)
+                        readingStateManager.clearFolderStates(item.path)
+                        directZipHandler.onFolderDeleted(item.path)
                     }
                 }
             }
 
-            // Clear selection and refresh
             _uiState.value = _uiState.value.copy(
                 selectedItems = emptySet(),
                 isSelectionMode = false
             )
             scanDirectory(_uiState.value.currentPath)
-        }
-    }
-
-    private fun clearCacheForFolder(folderPath: String) {
-        // フォルダー削除時のデータクリアは不要（age機能で後から削除）
-        // メモリキャッシュのみクリア
-        viewModelScope.launch {
-            try {
-                println("DEBUG: Clearing memory cache for folder: $folderPath")
-
-                // メモリキャッシュから該当ファイルを削除
-                val keysToRemove = _readingStates.keys.filter { filePath ->
-                    filePath.contains(folderPath)
-                }
-                keysToRemove.forEach { key ->
-                    _readingStates.remove(key)
-                }
-
-                // DirectZipImageHandlerでもフォルダー削除処理を実行（メモリキャッシュのみ）
-                directZipHandler.onFolderDeleted(folderPath)
-
-                println("DEBUG: Memory cache cleared for folder: $folderPath")
-            } catch (e: Exception) {
-                println("ERROR: Failed to clear memory cache for folder $folderPath: ${e.message}")
-                e.printStackTrace()
-            }
         }
     }
 
@@ -577,107 +683,18 @@ class LocalFileViewModel(
         _uiState.value = _uiState.value.copy(showDeleteZipWithPermissionDialog = show)
     }
 
-    // Reading status management（シンプル化版）
-    fun updateReadingStatus(zipFile: LocalItem.ZipFile, currentIndex: Int) {
-        viewModelScope.launch {
-            try {
-                println("=== ViewModel.updateReadingStatus START (Simplified) ===")
-                println("DEBUG: File: ${zipFile.name}")
-                println("DEBUG: Current Index: $currentIndex")
-                println("DEBUG: Total Images: ${zipFile.totalImageCount}")
-
-                // 即座保存（バッチ処理なし）
-                readingDataManager.saveReadingData(
-                    filePath = zipFile.file.absolutePath,
-                    currentPage = currentIndex,
-                    totalPages = zipFile.totalImageCount
-                )
-
-                // メモリキャッシュ更新
-                val newProgress = readingDataManager.getReadingProgress(zipFile.file.absolutePath)
-                _readingStates[zipFile.file.absolutePath] = newProgress
-
-                // フィルターが適用されている場合は再適用
-                val currentState = _uiState.value
-                if (currentState.filterType != ReadingFilterType.ALL) {
-                    val filteredItems =
-                        applyReadingFilter(currentState.localItems, currentState.filterType)
-                    _uiState.value = currentState.copy(filteredLocalItems = filteredItems)
-                }
-
-                println("DEBUG: Updated - Status: ${newProgress.status}, Position: ${newProgress.currentIndex}")
-                println("=== ViewModel.updateReadingStatus END ===")
-
-            } catch (e: Exception) {
-                println("ERROR: ViewModel.updateReadingStatus failed: ${e.message}")
-                e.printStackTrace()
-            }
-        }
-    }
-
-    fun markAsCompleted(zipFile: LocalItem.ZipFile) {
-        updateReadingStatus(zipFile, zipFile.totalImageCount - 1)
-    }
-
-    fun markAsReading(zipFile: LocalItem.ZipFile, currentIndex: Int) {
-        updateReadingStatus(zipFile, currentIndex)
-    }
-
-    fun markAsUnread(zipFile: LocalItem.ZipFile) {
-        updateReadingStatus(zipFile, 0)
-    }
-
-    // ZIPファイルを開いたときの処理
-    fun onZipFileOpened(zipFile: LocalItem.ZipFile) {
-        viewModelScope.launch {
-            try {
-                // 既存の読書データを取得
-                val existingData = readingDataManager.getReadingData(zipFile.file.absolutePath)
-                
-                // 総画像数のみ更新（既存の位置とステータスは保持）
-                if (existingData.totalPages != zipFile.totalImageCount) {
-                    readingDataManager.saveReadingData(
-                        filePath = zipFile.file.absolutePath,
-                        currentPage = existingData.currentPage,
-                        totalPages = zipFile.totalImageCount,
-                        status = existingData.status
-                    )
-                }
-
-                // メモリキャッシュ更新
-                val newProgress = readingDataManager.getReadingProgress(zipFile.file.absolutePath)
-                _readingStates[zipFile.file.absolutePath] = newProgress
-
-                // フィルターが適用されている場合は再適用
-                val currentState = _uiState.value
-                if (currentState.filterType != ReadingFilterType.ALL) {
-                    val filteredItems =
-                        applyReadingFilter(currentState.localItems, currentState.filterType)
-                    _uiState.value = currentState.copy(filteredLocalItems = filteredItems)
-                }
-
-                println("DEBUG: File opened - Kept existing position: ${newProgress.currentIndex}, Status: ${newProgress.status}")
-
-            } catch (e: Exception) {
-                println("ERROR: Failed to update reading status on file open: ${e.message}")
-                e.printStackTrace()
-            }
-        }
-    }
-
     // 画像ビューアーから戻ってきたときの処理
     fun onReturnFromImageViewer() {
         refreshCurrentDirectory()
     }
 
-    // デバッグ用
     fun refreshCurrentDirectory() {
         scanDirectory(_uiState.value.currentPath)
     }
 
     override fun onCleared() {
         super.onCleared()
-        // ViewModelが破棄される際にメモリキャッシュをクリア
+        readingStateManager.clearMemoryCache()
         directZipHandler.clearMemoryCacheAsync()
     }
 
@@ -691,14 +708,14 @@ class LocalFileViewModel(
                     val selectionManager = SelectionManager()
                     val directZipHandler = DirectZipImageHandler(context)
                     val fileNavigationManager = FileNavigationManager(context)
-                    val readingDataManager = SimpleReadingDataManager(context) // 新システム
+                    val readingStateManager = ReadingStateManager(context)
                     return LocalFileViewModel(
                         repository,
                         navigationManager,
                         selectionManager,
                         directZipHandler,
                         fileNavigationManager,
-                        readingDataManager
+                        readingStateManager
                     ) as T
                 }
             }

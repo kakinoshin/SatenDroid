@@ -21,6 +21,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -49,11 +52,11 @@ fun LocalItemCard(
     onLongClick: () -> Unit = {},
     onDeleteClick: () -> Unit = {}
 ) {
-    // 統一データ管理システムによる読書状態取得
-    val readingProgress = if (item is LocalItem.ZipFile) {
-        viewModel.getReadingProgress(item.file.absolutePath)
+    // 統一データ管理システムによる読書状態取得（State版）
+    val readingProgress by if (item is LocalItem.ZipFile) {
+        viewModel.getReadingProgressState(item.file.absolutePath)
     } else {
-        null
+        remember { mutableStateOf(null) }
     }
     
     Card(

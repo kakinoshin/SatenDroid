@@ -231,7 +231,7 @@ class ZipFileManager {
  * パフォーマンス最適化版 - 完全同期化対応
  */
 class DirectZipImageHandler(private val context: Context) {
-    private val simpleDataManager = SimpleReadingDataManager(context) // 統合システム
+    private val readingStateManager = ReadingStateManager(context) // 新システム
 
     // ZipFile管理
     private val zipFileManager = ZipFileManager()
@@ -240,6 +240,13 @@ class DirectZipImageHandler(private val context: Context) {
     private val cacheMutex = Mutex() // キャッシュ操作用
     private val stateMutex = Mutex() // 状態変更用
     private val metricsMutex = Mutex() // メトリクス更新用
+
+    // 現在のページ位置を自分で管理（UI状態に依存しない）
+    @Volatile
+    private var currentPagePosition: Int = 0
+    
+    @Volatile
+    private var totalPageCount: Int = 0
 
     // サポートされる画像拡張子
     private val supportedExtensions = setOf("jpg", "jpeg", "png", "gif", "bmp", "webp")
@@ -502,11 +509,7 @@ class DirectZipImageHandler(private val context: Context) {
                 // 最新の位置を保存
                 if (latestRequest != null) {
                     try {
-                        simpleDataManager.saveCurrentPosition(
-                            latestRequest.zipUri,
-                            latestRequest.imageIndex,
-                            latestRequest.zipFile
-                        )
+                        // 新しいシステムでは位置保存は不要（ファイルを閉じる時に保存）
                         println("DEBUG: Batch saved position ${latestRequest.imageIndex}")
                     } catch (_: Exception) {
                         println("DEBUG: Position save failed")
@@ -521,7 +524,7 @@ class DirectZipImageHandler(private val context: Context) {
      */
     suspend fun getImageEntriesFromZip(zipUri: Uri, zipFile: File? = null): List<ZipImageEntry> =
         withContext(Dispatchers.IO) {
-            val zipKey = simpleDataManager.generateFileIdentifier(zipUri, zipFile)
+            val zipKey = generateFileIdentifier(zipUri, zipFile)
             val fileModified = zipFile?.lastModified() ?: System.currentTimeMillis()
 
             // キャッシュから取得を試行
@@ -531,8 +534,18 @@ class DirectZipImageHandler(private val context: Context) {
                     stateMutex.withLock {
                         currentZipUri = zipUri
                         currentZipEntries = cachedData.entries
+                        totalPageCount = cachedData.entries.size
+                        
+                        // ★ キャッシュヒット時も保存されている位置を読み込む
+                        val filePath = generateFileIdentifier(zipUri, zipFile)
+                        val savedState = readingStateManager.getState(filePath)
+                        currentPagePosition = savedState.currentPage
+                        
+                        println("DEBUG: Using cached entries for ${zipFile?.name ?: zipUri}")
+                        println("  Total pages: $totalPageCount")
+                        println("  Saved position: $currentPagePosition")
+                        println("  Status: ${savedState.status}")
                     }
-                    println("DEBUG: Using cached entries for ${zipFile?.name ?: zipUri}")
                     return@withContext cachedData.entries
                 }
             }
@@ -589,13 +602,35 @@ class DirectZipImageHandler(private val context: Context) {
             // キャッシュに保存と状態更新を同期化
             stateMutex.withLock {
                 zipEntryCache[zipKey] = ZipEntryData(sortedEntries, fileModified)
+                
+                // ★ 新しいファイルの状態を設定
                 currentZipUri = zipUri
                 currentZipEntries = sortedEntries
+                totalPageCount = sortedEntries.size
+                
+                // ★ 保存されている位置を読み込む（既存データを尊重）
+                val filePath = generateFileIdentifier(zipUri, zipFile)
+                val savedState = readingStateManager.getState(filePath)
+                currentPagePosition = savedState.currentPage
+                
+                println("DEBUG: DirectZipHandler - Initialized new file")
+                println("  Total pages: $totalPageCount")
+                println("  Saved position: $currentPagePosition")
+                println("  Status: ${savedState.status}")
             }
 
             println("DEBUG: ZIP entry scanning completed - ${sortedEntries.size} images ready")
             return@withContext sortedEntries
         }
+
+    /**
+     * ページが変更されたことを通知（UIから呼ばれる）
+     * ただし、保存はしない。記録するだけ。
+     */
+    fun updateCurrentPage(page: Int) {
+        currentPagePosition = page
+        println("DEBUG: DirectZipHandler - Current page updated to: $page")
+    }
 
     /**
      * キャッシュに画像データを原子的に追加（Phase 2: より保守的な設定）
@@ -840,9 +875,108 @@ class DirectZipImageHandler(private val context: Context) {
         }
 
     /**
-     * 現在のZipファイルを閉じる（完全同期化版）
+     * 現在のZIPファイルの状態を保存（ファイルは閉じない）
+     * ファイル切り替え前に確実に状態を保存するためのメソッド
+     * 
+     * @param currentPage 保存する現在のページ位置
      */
-    suspend fun closeCurrentZipFile() {
+    suspend fun saveCurrentFileState(currentPage: Int) {
+        stateMutex.withLock {
+            val zipUri = currentZipUri
+            val zipFile = currentZipEntries.firstOrNull()?.zipFile
+            
+            if (zipUri != null && totalPageCount > 0) {
+                // 最新のページ位置を更新
+                currentPagePosition = currentPage
+                
+                // ファイルパスを生成
+                val filePath = generateFileIdentifier(zipUri, zipFile)
+                
+                // ★ ステータスを正確に判定（最終ページなら必ずCOMPLETED）
+                val status = when {
+                    currentPagePosition >= totalPageCount - 1 -> {
+                        println("DEBUG: DirectZipHandler - ★★★ File on last page -> COMPLETED ★★★")
+                        com.celstech.satendroid.ui.models.ReadingStatus.COMPLETED
+                    }
+                    currentPagePosition > 0 -> com.celstech.satendroid.ui.models.ReadingStatus.READING
+                    else -> com.celstech.satendroid.ui.models.ReadingStatus.UNREAD
+                }
+                
+                // 同期保存で確実に保存
+                withContext(Dispatchers.IO) {
+                    readingStateManager.updateCurrentPage(
+                        filePath = filePath,
+                        page = currentPagePosition,
+                        totalPages = totalPageCount
+                    )
+                    readingStateManager.saveStateSync(filePath)
+                }
+                
+                println("DEBUG: DirectZipHandler - ★ Saved file state ★")
+                println("  File: ${zipFile?.name ?: zipUri}")
+                println("  Page: $currentPagePosition/$totalPageCount")
+                println("  Status: $status")
+            }
+        }
+    }
+    
+    /**
+     * 現在のZIPファイルを閉じ、読書状態を確定して保存
+     * ファイルクローズ時に必ず呼ばれるべきメソッド
+     * 
+     * UIの状態には一切依存せず、DirectZipHandler自身が管理している状態を使用
+     */
+    suspend fun closeCurrentZipFileWithState() {
+        stateMutex.withLock {
+            val zipUri = currentZipUri
+            val zipFile = currentZipEntries.firstOrNull()?.zipFile
+            
+            if (zipUri != null && totalPageCount > 0) {
+                // ファイルパスを生成
+                val filePath = generateFileIdentifier(zipUri, zipFile)
+                
+                // ★ 自分が管理している現在ページを使う（UIの状態には依存しない）
+                // ★ ステータスを正確に判定（最終ページなら必ずCOMPLETED）
+                val status = when {
+                    currentPagePosition >= totalPageCount - 1 -> {
+                        println("DEBUG: DirectZipHandler - ★★★ File on last page (close) -> COMPLETED ★★★")
+                        com.celstech.satendroid.ui.models.ReadingStatus.COMPLETED
+                    }
+                    currentPagePosition > 0 -> com.celstech.satendroid.ui.models.ReadingStatus.READING
+                    else -> com.celstech.satendroid.ui.models.ReadingStatus.UNREAD
+                }
+                
+                // 同期保存で確実に保存
+                withContext(Dispatchers.IO) {
+                    readingStateManager.updateCurrentPage(
+                        filePath = filePath,
+                        page = currentPagePosition,
+                        totalPages = totalPageCount
+                    )
+                    readingStateManager.saveStateSync(filePath)
+                }
+                
+                println("DEBUG: DirectZipHandler - ★ Saved state on close ★")
+                println("  File: ${zipFile?.name ?: zipUri}")
+                println("  Page: $currentPagePosition/$totalPageCount")
+                println("  Status: $status")
+            }
+            
+            // 物理的にZIPファイルを閉じる
+            closeCurrentZipFileInternal()
+            
+            // 状態をクリア
+            currentZipUri = null
+            currentZipEntries = emptyList()
+            currentPagePosition = 0
+            totalPageCount = 0
+        }
+    }
+
+    /**
+     * 現在のZipファイルを閉じる（内部用・状態保存なし）
+     */
+    private suspend fun closeCurrentZipFileInternal() {
         try {
             // 管理されているすべてのZipFileを閉じる
             zipFileManager.closeAllZipFiles()
@@ -850,6 +984,15 @@ class DirectZipImageHandler(private val context: Context) {
         } catch (_: Exception) {
             println("DEBUG: Error closing ZipFiles")
         }
+    }
+
+    /**
+     * 現在のZipファイルを閉じる（完全同期化版・互換性用）
+     * @deprecated 状態保存が必要な場合はcloseCurrentZipFileWithStateを使用してください
+     */
+    @Deprecated("Use closeCurrentZipFileWithState for proper state management")
+    suspend fun closeCurrentZipFile() {
+        closeCurrentZipFileInternal()
     }
 
     /**
@@ -1029,6 +1172,24 @@ class DirectZipImageHandler(private val context: Context) {
     }
 
     /**
+     * ファイル識別子を生成（public）
+     */
+    fun generateFileIdentifier(zipUri: Uri, zipFile: File? = null): String {
+        return try {
+            when {
+                zipFile != null && zipFile.exists() -> zipFile.absolutePath
+                zipUri.scheme == "file" -> {
+                    val path = zipUri.path ?: zipUri.toString()
+                    File(path).absolutePath
+                }
+                else -> zipUri.toString()
+            }
+        } catch (e: Exception) {
+            zipUri.toString()
+        }
+    }
+
+    /**
      * パフォーマンスメトリクスの更新（完全同期化版）
      */
     private fun updateMetrics(loadTime: Long, isHit: Boolean = false, isPreload: Boolean = false) {
@@ -1068,6 +1229,7 @@ class DirectZipImageHandler(private val context: Context) {
 
     /**
      * メモリキャッシュをクリア（完全同期化版）
+     * 注意: currentZipUri と currentZipEntries はクリアしない（状態保持）
      */
     suspend fun clearMemoryCache() {
         // アクティブなプリロードをキャンセル
@@ -1079,14 +1241,14 @@ class DirectZipImageHandler(private val context: Context) {
             currentMemoryUsage.set(0)
         }
 
-        // エントリキャッシュと状態をクリア
+        // エントリキャッシュのみクリア（状態は保持）
         stateMutex.withLock {
             zipEntryCache.clear()
-            currentZipUri = null
-            currentZipEntries = emptyList()
+            // currentZipUri と currentZipEntries はクリアしない
+            // currentPagePosition と totalPageCount も保持
         }
 
-        println("DEBUG: Memory cache cleared")
+        println("DEBUG: Memory cache cleared (state preserved)")
         println("DEBUG: Active ZipFiles: ${zipFileManager.getActiveZipFileCount()}")
         println("DEBUG: Memory usage reset to 0")
 
@@ -1134,9 +1296,6 @@ class DirectZipImageHandler(private val context: Context) {
         }
     }
 
-    // 既存メソッドのデリゲート（互換性用）
-    fun getSimpleDataManager(): SimpleReadingDataManager = simpleDataManager
-
     /**
      * 外部からの位置保存要求を受け付ける（バッチ処理版を内部利用）
      */
@@ -1145,17 +1304,12 @@ class DirectZipImageHandler(private val context: Context) {
     }
 
     /**
-     * 外部からの位置取得要求をSimpleDataManagerに委譲
+     * 外部からの位置取得要求
      */
     fun getSavedPosition(zipUri: Uri, zipFile: File? = null): Int {
-        return simpleDataManager.getSavedPosition(zipUri, zipFile)
-    }
-
-    /**
-     * 外部からのファイル識別子生成要求をSimpleDataManagerに委譲
-     */
-    fun generateFileIdentifier(zipUri: Uri, zipFile: File? = null): String {
-        return simpleDataManager.generateFileIdentifier(zipUri, zipFile)
+        val filePath = generateFileIdentifier(zipUri, zipFile)
+        val state = readingStateManager.getState(filePath)
+        return state.currentPage
     }
 
     /**

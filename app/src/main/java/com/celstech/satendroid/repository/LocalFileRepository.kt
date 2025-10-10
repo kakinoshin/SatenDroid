@@ -4,7 +4,7 @@ import android.content.Context
 import android.os.Environment
 import com.celstech.satendroid.ui.models.LocalItem
 import com.celstech.satendroid.utils.LocalItemFactory
-import com.celstech.satendroid.utils.SimpleReadingDataManager
+import com.celstech.satendroid.utils.ReadingStateManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -16,7 +16,7 @@ import java.io.File
 class LocalFileRepository(private val context: Context) {
 
     private val localItemFactory = LocalItemFactory(context)
-    private val readingDataManager = SimpleReadingDataManager(context)
+    private val readingStateManager = ReadingStateManager(context)
 
     /**
      * 指定されたパスのディレクトリをスキャンしてLocalItemリストを取得
@@ -199,12 +199,16 @@ class LocalFileRepository(private val context: Context) {
             relativePath = absolutePath // 絶対パスに変更
         )
         
-        // 読書データ管理システムに総画像数を保存
+        // 読書状態管理システムに総画像数を更新
         if (zipFileItem.totalImageCount > 0) {
-            readingDataManager.saveTotalImages(
-                filePath = child.absolutePath,
-                totalImages = zipFileItem.totalImageCount
-            )
+            val existingState = readingStateManager.getState(child.absolutePath)
+            if (existingState.totalPages != zipFileItem.totalImageCount) {
+                readingStateManager.updateCurrentPage(
+                    filePath = child.absolutePath,
+                    page = existingState.currentPage,
+                    totalPages = zipFileItem.totalImageCount
+                )
+            }
         }
         
         println("DEBUG: Processed ZIP file: ${child.name}, totalImageCount: ${zipFileItem.totalImageCount}")

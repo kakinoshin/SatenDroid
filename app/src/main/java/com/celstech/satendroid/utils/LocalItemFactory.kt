@@ -2,17 +2,18 @@ package com.celstech.satendroid.utils
 
 import android.content.Context
 import com.celstech.satendroid.ui.models.LocalItem
+import com.celstech.satendroid.ui.models.ReadingStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
  * LocalItemを作成するためのファクトリークラス
- * サムネイル生成と読書状況の取得を統合
+ * ReadingStateManagerに統合
  */
 class LocalItemFactory(private val context: Context) {
     
-    private val readingStatusManager = ReadingStatusManager(context)
+    private val readingStateManager = ReadingStateManager(context)
     
     // 画像数のキャッシュ (ファイルパス -> 画像数)
     private val imageCountCache = mutableMapOf<String, Pair<Long, Int>>() // (lastModified, imageCount)
@@ -201,34 +202,36 @@ class LocalItemFactory(private val context: Context) {
     }
     
     /**
-     * ZIPファイルの読書状況を更新
+     * ZIPファイルの読書状況を更新（ReadingStateManager使用）
      */
     suspend fun updateReadingStatus(
         zipFile: LocalItem.ZipFile,
         currentIndex: Int
     ) {
-        val filePathForReading = zipFile.file.absolutePath
+        val filePath = zipFile.file.absolutePath
         
-        when {
-            // 最後の画像まで見た場合は「既読」
-            currentIndex >= zipFile.totalImageCount - 1 && zipFile.totalImageCount > 0 -> {
-                readingStatusManager.markAsCompleted(filePathForReading, currentIndex)
-            }
-            // 1枚でも画像を見た場合、または明示的に読書開始した場合は「読書中」
-            currentIndex >= 0 && zipFile.totalImageCount > 0 -> {
-                readingStatusManager.markAsReading(filePathForReading, currentIndex)
-            }
-            // その他の場合は「未読」
-            else -> {
-                readingStatusManager.markAsUnread(filePathForReading)
-            }
+        // RAM上で状態を更新
+        withContext(Dispatchers.IO) {
+            readingStateManager.updateCurrentPage(
+                filePath = filePath,
+                page = currentIndex,
+                totalPages = zipFile.totalImageCount
+            )
+            // 同期保存
+            readingStateManager.saveStateSync(filePath)
         }
+        
+        val state = readingStateManager.getState(filePath)
+        println("DEBUG: LocalItemFactory - Updated reading status")
+        println("  File: ${zipFile.name}")
+        println("  Page: $currentIndex/${zipFile.totalImageCount}")
+        println("  Status: ${state.status}")
     }
     
     /**
      * ファイル削除時に読書状況をクリア
      */
     suspend fun clearReadingStatusForFile(filePath: String) {
-        readingStatusManager.clearReadingStatus(filePath)
+        readingStateManager.clearFileState(filePath)
     }
 }
