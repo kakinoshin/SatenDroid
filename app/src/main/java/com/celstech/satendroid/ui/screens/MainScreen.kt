@@ -164,14 +164,18 @@ fun MainScreen() {
                     initialPage = initialPage
                 )
 
-                // 総画像数を保存
+                // 総画像数のみ更新（既存の位置は保持）
                 val filePath = directZipHandler.generateFileIdentifier(uri, file)
-                readingDataManager.saveReadingData(
-                    filePath = filePath,
-                    currentPage = 0,
-                    totalPages = imageEntryList.size
-                )
-                println("DEBUG: Saved total images count: ${imageEntryList.size}")
+                val existingData = readingDataManager.getReadingData(filePath)
+                
+                if (existingData.totalPages != imageEntryList.size) {
+                    readingDataManager.saveReadingData(
+                        filePath = filePath,
+                        currentPage = existingData.currentPage,
+                        totalPages = imageEntryList.size,
+                        status = existingData.status
+                    )
+                }
 
                 isLoading = false
                 currentView = ViewState.ImageViewer
@@ -187,26 +191,37 @@ fun MainScreen() {
         }
     }
 
-    // ファイルナビゲーション処理
+    // ファイルナビゲーション処理（同期保存版）
     fun navigateToZipFile(newZipFile: File, isNextFile: Boolean = false) {
         coroutineScope.launch {
             try {
                 println("DEBUG: Navigating to file: ${newZipFile.name} (isNext: $isNextFile)")
 
-                // 現在の位置を確実に保存（即座に保存）
+                // 現在の位置を確実に同期保存
                 currentImageViewerState?.let { state ->
                     if (pagerState.currentPage >= 0) {
-                        // 即座に保存（バッチ処理ではなく）
                         val filePath = directZipHandler.generateFileIdentifier(
                             state.currentZipUri,
                             state.currentZipFile
                         )
-                        readingDataManager.saveReadingData(
+                        
+                        // ステータスを決定
+                        val isCompleted = pagerState.currentPage >= state.imageEntries.size - 1
+                        val statusToSave = if (isCompleted) {
+                            com.celstech.satendroid.ui.models.ReadingStatus.COMPLETED
+                        } else {
+                            com.celstech.satendroid.ui.models.ReadingStatus.READING
+                        }
+                        
+                        // 同期保存
+                        readingDataManager.saveReadingDataSync(
                             filePath = filePath,
                             currentPage = pagerState.currentPage,
-                            totalPages = state.imageEntries.size
+                            totalPages = state.imageEntries.size,
+                            status = statusToSave
                         )
-                        println("DEBUG: Immediately saved position ${pagerState.currentPage} for ${state.currentZipFile?.name}")
+                        
+                        println("DEBUG: Saved position ${pagerState.currentPage} for ${state.currentZipFile?.name} before navigation (SYNC)")
                     }
                 }
 
@@ -288,37 +303,47 @@ fun MainScreen() {
         }
     }
 
-    // クリーンアップ（改良版）
+    // クリーンアップ（改良版 - 同期保存）
     DisposableEffect(Unit) {
         onDispose {
             println("DEBUG: MainScreen disposing")
-            try {
-                runBlocking {
-                    // 現在の位置を最終保存
-                    currentImageViewerState?.let { state ->
-                        if (pagerState.currentPage >= 0) {
-                            val filePath = directZipHandler.generateFileIdentifier(
-                                state.currentZipUri,
-                                state.currentZipFile
-                            )
-                            readingDataManager.saveReadingData(
-                                filePath = filePath,
-                                currentPage = pagerState.currentPage,
-                                totalPages = state.imageEntries.size
-                            )
-                            println("DEBUG: Final position saved: ${pagerState.currentPage}")
-                        }
+            
+            // 現在の位置を最終同期保存
+            currentImageViewerState?.let { state ->
+                if (pagerState.currentPage >= 0) {
+                    val filePath = directZipHandler.generateFileIdentifier(
+                        state.currentZipUri,
+                        state.currentZipFile
+                    )
+                    
+                    // ステータスを決定
+                    val isCompleted = pagerState.currentPage >= state.imageEntries.size - 1
+                    val statusToSave = when {
+                        isCompleted -> com.celstech.satendroid.ui.models.ReadingStatus.COMPLETED
+                        pagerState.currentPage > 0 -> com.celstech.satendroid.ui.models.ReadingStatus.READING
+                        else -> com.celstech.satendroid.ui.models.ReadingStatus.UNREAD
                     }
-
-                    // リソースクリーンアップ（フラッシュ処理は不要）
-                    directZipHandler.clearMemoryCache()
-                    directZipHandler.closeCurrentZipFile()
-                    directZipHandler.cleanup()
+                    
+                    // 同期保存（runBlocking不要 - 直接呼び出し）
+                    readingDataManager.saveReadingDataSync(
+                        filePath = filePath,
+                        currentPage = pagerState.currentPage,
+                        totalPages = state.imageEntries.size,
+                        status = statusToSave
+                    )
+                    
+                    println("DEBUG: Final position saved (SYNC): ${pagerState.currentPage}, Status: $statusToSave")
                 }
-                println("DEBUG: Cleanup completed")
-            } catch (e: Exception) {
-                println("ERROR: Cleanup error: ${e.message}")
             }
+            
+            // リソースクリーンアップ
+            coroutineScope.launch {
+                directZipHandler.clearMemoryCache()
+                directZipHandler.closeCurrentZipFile()
+                directZipHandler.cleanup()
+            }
+            
+            println("DEBUG: Cleanup completed")
         }
     }
 
@@ -446,135 +471,118 @@ fun MainScreen() {
                     showTopBar = showTopBar,
                     onToggleTopBar = { showTopBar = !showTopBar },
                     onBackToFiles = {
-                        // 戻る際に確実に位置を保存
-                        coroutineScope.launch {
-                            try {
-                                currentImageViewerState?.let { currentState ->
-                                    if (pagerState.currentPage >= 0) {
-                                        val filePath = directZipHandler.generateFileIdentifier(
-                                            currentState.currentZipUri,
-                                            currentState.currentZipFile
-                                        )
+                        // 戻る際に確実に位置を保存（同期保存）
+                        currentImageViewerState?.let { currentState ->
+                            if (pagerState.currentPage >= 0) {
+                                val filePath = directZipHandler.generateFileIdentifier(
+                                    currentState.currentZipUri,
+                                    currentState.currentZipFile
+                                )
 
-                                        // 最終ページかどうか確認して適切なステータスを設定
-                                        val isCompleted =
-                                            pagerState.currentPage >= currentState.imageEntries.size - 1
-                                        val statusToSave = when {
-                                            isCompleted -> com.celstech.satendroid.ui.models.ReadingStatus.COMPLETED
-                                            pagerState.currentPage > 0 -> com.celstech.satendroid.ui.models.ReadingStatus.READING
-                                            else -> com.celstech.satendroid.ui.models.ReadingStatus.UNREAD
-                                        }
+                                // 最終ページかどうか確認して適切なステータスを設定
+                                val isCompleted =
+                                    pagerState.currentPage >= currentState.imageEntries.size - 1
+                                val statusToSave = when {
+                                    isCompleted -> com.celstech.satendroid.ui.models.ReadingStatus.COMPLETED
+                                    pagerState.currentPage > 0 -> com.celstech.satendroid.ui.models.ReadingStatus.READING
+                                    else -> com.celstech.satendroid.ui.models.ReadingStatus.UNREAD
+                                }
 
-                                        readingDataManager.saveReadingData(
-                                            filePath = filePath,
-                                            currentPage = pagerState.currentPage,
-                                            totalPages = currentState.imageEntries.size,
-                                            status = statusToSave
-                                        )
+                                // 同期保存で確実に保存
+                                readingDataManager.saveReadingDataSync(
+                                    filePath = filePath,
+                                    currentPage = pagerState.currentPage,
+                                    totalPages = currentState.imageEntries.size,
+                                    status = statusToSave
+                                )
 
-                                        // SimpleReadingDataManagerで即座保存済み
-                                        
-                                        if (isCompleted) {
-                                            currentState.currentZipFile?.let { file ->
-                                                fileCompletionUpdate = file
-                                            }
-                                        }
-
-                                        println("DEBUG: Saved position and status $statusToSave before returning to file list")
-                                        println("DEBUG: Page: ${pagerState.currentPage}/${currentState.imageEntries.size}")
+                                if (isCompleted) {
+                                    currentState.currentZipFile?.let { file ->
+                                        fileCompletionUpdate = file
                                     }
                                 }
-                            } catch (e: Exception) {
-                                println("ERROR: Failed to save position on back: ${e.message}")
-                            }
 
-                            // ファイルリストに戻る
-                            currentView = ViewState.LocalFileList
+                                println("DEBUG: Saved position and status $statusToSave before returning to file list (SYNC)")
+                                println("DEBUG: Page: ${pagerState.currentPage}/${currentState.imageEntries.size}")
+                            }
                         }
+
+                        // ファイルリストに戻る
+                        currentView = ViewState.LocalFileList
                     },
                     onNavigateToPreviousFile = {
-                        coroutineScope.launch {
-                            // 現在の位置を即座に保存し、完了状態も確認
-                            state.currentZipFile?.let { currentFile ->
-                                try {
-                                    val filePath = directZipHandler.generateFileIdentifier(
-                                        state.currentZipUri,
-                                        state.currentZipFile
-                                    )
-                                    // 最終ページまで到達している場合は完了ステータスで保存
-                                    val isCompleted =
-                                        pagerState.currentPage >= state.imageEntries.size - 1
-                                    val statusToSave = if (isCompleted) {
-                                        com.celstech.satendroid.ui.models.ReadingStatus.COMPLETED
-                                    } else {
-                                        com.celstech.satendroid.ui.models.ReadingStatus.READING
-                                    }
-
-                                    readingDataManager.saveReadingData(
-                                        filePath = filePath,
-                                        currentPage = pagerState.currentPage,
-                                        totalPages = state.imageEntries.size,
-                                        status = statusToSave
-                                    )
-
-                                    if (isCompleted) {
-                                        fileCompletionUpdate = currentFile
-                                    }
-                                    lastReadingProgress = Pair(currentFile, pagerState.currentPage)
-
-                                    println("DEBUG: Saved position and status before navigating to previous file")
-                                    println("DEBUG: Status: $statusToSave, Page: ${pagerState.currentPage}/${state.imageEntries.size}")
-                                } catch (e: Exception) {
-                                    println("ERROR: Failed to save position before navigation: ${e.message}")
-                                }
+                        // 現在の位置を即座に同期保存し、完了状態も確認
+                        state.currentZipFile?.let { currentFile ->
+                            val filePath = directZipHandler.generateFileIdentifier(
+                                state.currentZipUri,
+                                state.currentZipFile
+                            )
+                            // 最終ページまで到達している場合は完了ステータスで保存
+                            val isCompleted =
+                                pagerState.currentPage >= state.imageEntries.size - 1
+                            val statusToSave = if (isCompleted) {
+                                com.celstech.satendroid.ui.models.ReadingStatus.COMPLETED
+                            } else {
+                                com.celstech.satendroid.ui.models.ReadingStatus.READING
                             }
 
-                            state.fileNavigationInfo?.previousFile?.let { previousFile ->
-                                navigateToZipFile(previousFile)
+                            // 同期保存で確実に保存
+                            readingDataManager.saveReadingDataSync(
+                                filePath = filePath,
+                                currentPage = pagerState.currentPage,
+                                totalPages = state.imageEntries.size,
+                                status = statusToSave
+                            )
+
+                            if (isCompleted) {
+                                fileCompletionUpdate = currentFile
                             }
+                            lastReadingProgress = Pair(currentFile, pagerState.currentPage)
+
+                            println("DEBUG: Saved position and status before navigating to previous file (SYNC)")
+                            println("DEBUG: Status: $statusToSave, Page: ${pagerState.currentPage}/${state.imageEntries.size}")
+                        }
+
+                        state.fileNavigationInfo?.previousFile?.let { previousFile ->
+                            navigateToZipFile(previousFile)
                         }
                     },
                     onNavigateToNextFile = {
-                        coroutineScope.launch {
-                            // 現在の位置を即座に保存し、完了状態も設定
-                            state.currentZipFile?.let { currentFile ->
-                                try {
-                                    val filePath = directZipHandler.generateFileIdentifier(
-                                        state.currentZipUri,
-                                        state.currentZipFile
-                                    )
-                                    // 最終ページまで到達している場合は完了ステータスで保存
-                                    val isCompleted =
-                                        pagerState.currentPage >= state.imageEntries.size - 1
-                                    val statusToSave = if (isCompleted) {
-                                        com.celstech.satendroid.ui.models.ReadingStatus.COMPLETED
-                                    } else {
-                                        com.celstech.satendroid.ui.models.ReadingStatus.READING
-                                    }
-
-                                    readingDataManager.saveReadingData(
-                                        filePath = filePath,
-                                        currentPage = pagerState.currentPage,
-                                        totalPages = state.imageEntries.size,
-                                        status = statusToSave
-                                    )
-
-                                    // 完了状態の場合は明示的にfileCompletionUpdateを設定
-                                    if (isCompleted) {
-                                        fileCompletionUpdate = currentFile
-                                    }
-                                    lastReadingProgress = Pair(currentFile, pagerState.currentPage)
-
-                                    println("DEBUG: Saved position and status before navigating to next file")
-                                    println("DEBUG: Status: $statusToSave, Page: ${pagerState.currentPage}/${state.imageEntries.size}")
-                                } catch (e: Exception) {
-                                    println("ERROR: Failed to save position before navigation: ${e.message}")
-                                }
+                        // 現在の位置を即座に同期保存し、完了状態も設定
+                        state.currentZipFile?.let { currentFile ->
+                            val filePath = directZipHandler.generateFileIdentifier(
+                                state.currentZipUri,
+                                state.currentZipFile
+                            )
+                            // 最終ページまで到達している場合は完了ステータスで保存
+                            val isCompleted =
+                                pagerState.currentPage >= state.imageEntries.size - 1
+                            val statusToSave = if (isCompleted) {
+                                com.celstech.satendroid.ui.models.ReadingStatus.COMPLETED
+                            } else {
+                                com.celstech.satendroid.ui.models.ReadingStatus.READING
                             }
 
-                            state.fileNavigationInfo?.nextFile?.let { nextFile ->
-                                navigateToZipFile(nextFile, isNextFile = true)
+                            // 同期保存で確実に保存
+                            readingDataManager.saveReadingDataSync(
+                                filePath = filePath,
+                                currentPage = pagerState.currentPage,
+                                totalPages = state.imageEntries.size,
+                                status = statusToSave
+                            )
+
+                            // 完了状態の場合は明示的にfileCompletionUpdateを設定
+                            if (isCompleted) {
+                                fileCompletionUpdate = currentFile
                             }
+                            lastReadingProgress = Pair(currentFile, pagerState.currentPage)
+
+                            println("DEBUG: Saved position and status before navigating to next file (SYNC)")
+                            println("DEBUG: Status: $statusToSave, Page: ${pagerState.currentPage}/${state.imageEntries.size}")
+                        }
+
+                        state.fileNavigationInfo?.nextFile?.let { nextFile ->
+                            navigateToZipFile(nextFile, isNextFile = true)
                         }
                     },
                     fileNavigationInfo = state.fileNavigationInfo,

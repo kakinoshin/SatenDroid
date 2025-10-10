@@ -631,12 +631,18 @@ class LocalFileViewModel(
     fun onZipFileOpened(zipFile: LocalItem.ZipFile) {
         viewModelScope.launch {
             try {
-                // ファイルを開いた時点で読書中に設定
-                readingDataManager.saveReadingData(
-                    filePath = zipFile.file.absolutePath,
-                    currentPage = 0,
-                    totalPages = zipFile.totalImageCount
-                )
+                // 既存の読書データを取得
+                val existingData = readingDataManager.getReadingData(zipFile.file.absolutePath)
+                
+                // 総画像数のみ更新（既存の位置とステータスは保持）
+                if (existingData.totalPages != zipFile.totalImageCount) {
+                    readingDataManager.saveReadingData(
+                        filePath = zipFile.file.absolutePath,
+                        currentPage = existingData.currentPage,
+                        totalPages = zipFile.totalImageCount,
+                        status = existingData.status
+                    )
+                }
 
                 // メモリキャッシュ更新
                 val newProgress = readingDataManager.getReadingProgress(zipFile.file.absolutePath)
@@ -650,7 +656,7 @@ class LocalFileViewModel(
                     _uiState.value = currentState.copy(filteredLocalItems = filteredItems)
                 }
 
-                println("DEBUG: File opened - Status: ${newProgress.status}")
+                println("DEBUG: File opened - Kept existing position: ${newProgress.currentIndex}, Status: ${newProgress.status}")
 
             } catch (e: Exception) {
                 println("ERROR: Failed to update reading status on file open: ${e.message}")

@@ -82,7 +82,8 @@ class SimpleReadingDataManager(private val context: Context) {
     }
 
     /**
-     * 読書データを保存（即座保存・アクセス情報更新）
+     * 読書データを保存（非同期保存・アクセス情報更新）
+     * 注意: apply()を使用するため、重要なタイミングではsaveReadingDataSyncを使用してください
      */
     fun saveReadingData(
         filePath: String,
@@ -110,7 +111,7 @@ class SimpleReadingDataManager(private val context: Context) {
         // メモリキャッシュ更新
         cache[normalizedPath] = data
 
-        // 即座にSharedPreferencesに保存
+        // 即座にSharedPreferencesに保存（非同期）
         val key = getStorageKey(normalizedPath)
         val jsonString = json.encodeToString(data)
 
@@ -118,9 +119,53 @@ class SimpleReadingDataManager(private val context: Context) {
             putString(key, jsonString)
         }
 
-        println("DEBUG: SimpleReadingDataManager - Saved data for ${File(filePath).name}")
+        println("DEBUG: SimpleReadingDataManager - Saved data (async) for ${File(filePath).name}")
         println("DEBUG:   CurrentPage: $currentPage, TotalPages: $totalPages, Status: $status")
         println("DEBUG:   AccessCount: ${data.accessCount}, Age: ${data.ageInDays} days")
+    }
+
+    /**
+     * 読書データを同期保存（確実な保存が必要な場合に使用）
+     * ファイルを閉じる際、アプリ終了時、スリープ前などの重要なタイミングで使用
+     */
+    fun saveReadingDataSync(
+        filePath: String,
+        currentPage: Int,
+        totalPages: Int,
+        status: ReadingStatus = determineStatus(currentPage, totalPages)
+    ) {
+        val normalizedPath = normalizeFilePath(filePath)
+        val currentTime = System.currentTimeMillis()
+
+        // 既存データを取得してアクセス情報を更新
+        val existingData = getReadingDataInternal(normalizedPath)
+
+        val data = FileReadingData(
+            filePath = normalizedPath,
+            currentPage = currentPage,
+            totalPages = totalPages,
+            status = status,
+            lastUpdated = currentTime,
+            createdAt = existingData?.createdAt ?: currentTime,
+            accessCount = (existingData?.accessCount ?: 0) + 1,
+            lastAccessTime = currentTime
+        )
+
+        // メモリキャッシュ更新
+        cache[normalizedPath] = data
+
+        // SharedPreferencesに同期保存（commit()を使用）
+        val key = getStorageKey(normalizedPath)
+        val jsonString = json.encodeToString(data)
+
+        val success = prefs.edit(commit = true) {
+            putString(key, jsonString)
+        }
+
+        println("DEBUG: SimpleReadingDataManager - Saved data (SYNC) for ${File(filePath).name}")
+        println("DEBUG:   CurrentPage: $currentPage, TotalPages: $totalPages, Status: $status")
+        println("DEBUG:   AccessCount: ${data.accessCount}, Age: ${data.ageInDays} days")
+        println("DEBUG:   Commit success: $success")
     }
 
     /**
