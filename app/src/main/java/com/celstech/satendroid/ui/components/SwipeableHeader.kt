@@ -86,7 +86,7 @@ fun SwipeableHeader(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .pointerInput(Unit) {
+            .pointerInput(headerState) {
                 detectDragGestures(
                     onDragStart = { offset ->
                         isSwipeInProgress = true
@@ -173,7 +173,7 @@ fun SwipeableHeader(
             }
             .let { baseModifier ->
                 if (enableTapToToggle) {
-                    baseModifier.pointerInput(Unit) {
+                    baseModifier.pointerInput(headerState) {
                         detectTapGestures(
                             onTap = { _ ->
                                 val newState = when (headerState) {
