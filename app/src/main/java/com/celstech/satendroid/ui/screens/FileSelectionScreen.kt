@@ -68,9 +68,10 @@ fun FileSelectionScreen(
     )
     val uiState by viewModel.uiState.collectAsState()
 
-    // SimpleReadingDataManagerで初期化と読み込み
+    // SimpleReadingDataManagerで初期化と読み込み - Phase 2拡張
     LaunchedEffect(Unit) {
         viewModel.scanDirectory(initialPath)
+        viewModel.initializeCloudProviders()
     }
 
     // 画像ビューアーから戻ってきたときの処理
@@ -177,19 +178,24 @@ fun FileSelectionScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        // 新しいスワイプ対応ヘッダー
+        // 新しいスワイプ対応ヘッダー - Phase 2機能統合
         SwipeableHeader(
             headerState = uiState.headerState,
             onHeaderStateChange = { newState ->
-                viewModel.setHeaderState(newState)
+                viewModel.setHeaderState(newState, "user_gesture")
             },
             onCollapseAfterDelay = {
                 if (uiState.headerState == HeaderState.EXPANDED) {
                     coroutineScope.launch {
-                        viewModel.collapseHeader()
+                        viewModel.autoCollapseHeader()
                     }
                 }
             },
+            swipeThreshold = uiState.headerSettings.swipeThreshold,
+            autoCollapseDelay = if (uiState.headerSettings.autoCollapseEnabled) 
+                uiState.headerSettings.autoCollapseDelay else 0L,
+            enableTapToToggle = uiState.headerSettings.enableTapToToggle,
+            enableVelocityDetection = uiState.headerSettings.enableVelocityDetection,
             content = {
                 AdaptiveHeader(
                     headerState = uiState.headerState,
@@ -197,12 +203,33 @@ fun FileSelectionScreen(
                     filterType = uiState.filterType,
                     isLoading = isLoading || uiState.isRefreshing,
                     hasFiles = uiState.localItems.isNotEmpty(),
+                    headerSettings = uiState.headerSettings,
+                    cloudProviders = uiState.cloudProviders,
                     onSettingsClick = onOpenSettings,
                     onDeviceClick = onOpenFromDevice,
                     onDropboxClick = onOpenFromDropbox,
                     onDownloadQueueClick = onOpenDownloadQueue,
                     onFilterTypeChange = viewModel::setReadingFilter,
-                    onRefreshClick = { viewModel.scanDirectory(uiState.currentPath) }
+                    onRefreshClick = { viewModel.scanDirectory(uiState.currentPath) },
+                    onCloudProviderClick = { provider ->
+                        // Cloud Provider機能の実装
+                        println("DEBUG: Cloud provider clicked: ${provider.name}")
+                        when (provider.id) {
+                            "dropbox" -> onOpenFromDropbox()
+                            "googledrive" -> {
+                                // Google Drive連携の実装
+                                // 実際にはCloud Provider管理画面やAPIを呼び出し
+                            }
+                            "onedrive" -> {
+                                // OneDrive連携の実装
+                            }
+                        }
+                    },
+                    onCloudProviderAuth = { providerId ->
+                        // Cloud Provider認証
+                        println("DEBUG: Starting authentication for provider: $providerId")
+                        viewModel.authenticateCloudProvider(providerId)
+                    }
                 )
             }
         )

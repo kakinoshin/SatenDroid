@@ -13,6 +13,10 @@ import com.celstech.satendroid.ui.models.LocalItem
 import com.celstech.satendroid.ui.models.ReadingFilterType
 import com.celstech.satendroid.ui.models.ReadingStatus
 import com.celstech.satendroid.ui.models.HeaderState
+import com.celstech.satendroid.ui.models.HeaderSettings
+import com.celstech.satendroid.ui.models.CloudProviderInfo
+import com.celstech.satendroid.ui.models.ConnectionStatus
+import com.celstech.satendroid.ui.models.PendingHeaderAction
 import com.celstech.satendroid.utils.DirectZipImageHandler
 import com.celstech.satendroid.utils.SimpleReadingDataManager
 import com.celstech.satendroid.utils.ReadingProgress
@@ -70,27 +74,221 @@ class LocalFileViewModel(
         return _readingStates[filePath] ?: readingDataManager.getReadingProgress(filePath)
     }
 
-    // Header state management
-    fun setHeaderState(headerState: HeaderState) {
-        _uiState.value = _uiState.value.copy(headerState = headerState)
+    // Header state management - Phase 2拡張
+    fun setHeaderState(headerState: HeaderState, trigger: String = "manual") {
+        val currentState = _uiState.value
+        
+        // 無効化チェック
+        if (currentState.isHeaderLocked) {
+            println("DEBUG: Header state change blocked - header is locked")
+            return
+        }
+        
+        // アニメーション中の状態変更制限
+        if (currentState.isHeaderAnimating && headerState != HeaderState.TRANSITIONING) {
+            _uiState.value = currentState.copy(
+                pendingHeaderAction = PendingHeaderAction.ChangeState(headerState)
+            )
+            return
+        }
+        
+        _uiState.value = currentState.copy(
+            headerState = headerState,
+            lastGestureTimestamp = System.currentTimeMillis(),
+            isHeaderAnimating = headerState == HeaderState.TRANSITIONING,
+            pendingHeaderAction = null
+        )
+        
+        println("DEBUG: Header state changed to $headerState (trigger: $trigger)")
     }
 
     fun toggleHeaderState() {
         val currentState = _uiState.value.headerState
         val newState = when (currentState) {
-            HeaderState.COLLAPSED -> HeaderState.EXPANDED
-            HeaderState.EXPANDED -> HeaderState.COLLAPSED
-            HeaderState.TRANSITIONING -> currentState // アニメーション中は状態変更しない
+            HeaderState.COLLAPSED, HeaderState.PREVIEW_COLLAPSE -> HeaderState.EXPANDED
+            HeaderState.EXPANDED, HeaderState.PREVIEW_EXPAND -> HeaderState.COLLAPSED
+            HeaderState.TRANSITIONING -> return // アニメーション中は状態変更しない
         }
-        setHeaderState(newState)
+        setHeaderState(newState, "toggle")
     }
 
     fun expandHeader() {
-        setHeaderState(HeaderState.EXPANDED)
+        setHeaderState(HeaderState.EXPANDED, "expand")
     }
 
     fun collapseHeader() {
-        setHeaderState(HeaderState.COLLAPSED)
+        setHeaderState(HeaderState.COLLAPSED, "collapse")
+    }
+    
+    fun autoCollapseHeader() {
+        setHeaderState(HeaderState.COLLAPSED, "auto_collapse")
+    }
+    
+    // Phase 2: ヘッダー設定管理
+    fun updateHeaderSettings(newSettings: HeaderSettings) {
+        val currentState = _uiState.value
+        val validatedSettings = newSettings.validate()
+        
+        _uiState.value = currentState.copy(
+            headerSettings = validatedSettings
+        )
+        
+        println("DEBUG: Header settings updated")
+    }
+    
+    fun setHeaderLocked(locked: Boolean) {
+        _uiState.value = _uiState.value.copy(isHeaderLocked = locked)
+    }
+    
+    fun executePendingHeaderAction() {
+        val currentState = _uiState.value
+        val pendingAction = currentState.pendingHeaderAction
+        
+        if (pendingAction != null && !currentState.isHeaderAnimating) {
+            when (pendingAction) {
+                is PendingHeaderAction.ChangeState -> {
+                    setHeaderState(pendingAction.targetState, "pending_execution")
+                }
+                is PendingHeaderAction.UpdateSettings -> {
+                    updateHeaderSettings(pendingAction.newSettings)
+                }
+                is PendingHeaderAction.RefreshProviders -> {
+                    refreshCloudProviders(pendingAction.forceRefresh)
+                }
+            }
+        }
+    }
+    
+    // Phase 2: Cloud Provider管理
+    fun refreshCloudProviders(forceRefresh: Boolean = false) {
+        viewModelScope.launch {
+            try {
+                val currentState = _uiState.value
+                val currentProviders = currentState.cloudProviders
+                
+                // 強制リフレッシュでない場合は、最後の更新時間をチェック
+                val refreshInterval = currentState.headerSettings.providerStatusRefreshInterval
+                val shouldRefresh = forceRefresh || currentProviders.isEmpty() || 
+                    currentProviders.any { provider ->
+                        provider.lastSyncTime?.let { lastSync ->
+                            System.currentTimeMillis() - lastSync > refreshInterval
+                        } ?: true
+                    }
+                
+                if (!shouldRefresh) {
+                    println("DEBUG: Cloud providers refresh skipped - not needed")
+                    return@launch
+                }
+                
+                // モックプロバイダーデータ（実際の実装では適切なAPIを呼び出し）
+                val updatedProviders = updateCloudProvidersStatus(currentProviders)
+                
+                _uiState.value = currentState.copy(
+                    cloudProviders = updatedProviders
+                )
+                
+                println("DEBUG: Cloud providers refreshed - ${updatedProviders.size} providers")
+                
+            } catch (e: Exception) {
+                println("ERROR: Failed to refresh cloud providers: ${e.message}")
+                e.printStackTrace()
+            }
+        }
+    }
+    
+    private suspend fun updateCloudProvidersStatus(
+        currentProviders: List<CloudProviderInfo>
+    ): List<CloudProviderInfo> {
+        // 実際の実装では、各プロバイダーの認証状態と接続状態をチェック
+        // ここではモックデータを返す
+        
+        val mockProviders = listOf(
+            CloudProviderInfo(
+                id = "dropbox",
+                name = "Dropbox",
+                isAuthenticated = true,
+                connectionStatus = ConnectionStatus.CONNECTED,
+                lastSyncTime = System.currentTimeMillis()
+            ),
+            CloudProviderInfo(
+                id = "googledrive",
+                name = "Google Drive",
+                isAuthenticated = false,
+                connectionStatus = ConnectionStatus.DISCONNECTED,
+                lastSyncTime = null
+            ),
+            CloudProviderInfo(
+                id = "onedrive",
+                name = "OneDrive",
+                isAuthenticated = true,
+                connectionStatus = ConnectionStatus.SYNCING,
+                lastSyncTime = System.currentTimeMillis() - 60000L
+            )
+        )
+        
+        return mockProviders
+    }
+    
+    fun authenticateCloudProvider(providerId: String) {
+        viewModelScope.launch {
+            try {
+                val currentState = _uiState.value
+                val updatedProviders = currentState.cloudProviders.map { provider ->
+                    if (provider.id == providerId) {
+                        provider.copy(
+                            isAuthenticated = true,
+                            connectionStatus = ConnectionStatus.CONNECTING
+                        )
+                    } else provider
+                }
+                
+                _uiState.value = currentState.copy(cloudProviders = updatedProviders)
+                
+                // 実際の認証処理をシミュレート
+                kotlinx.coroutines.delay(2000)
+                
+                val finalProviders = updatedProviders.map { provider ->
+                    if (provider.id == providerId) {
+                        provider.copy(
+                            connectionStatus = ConnectionStatus.CONNECTED,
+                            lastSyncTime = System.currentTimeMillis()
+                        )
+                    } else provider
+                }
+                
+                _uiState.value = _uiState.value.copy(cloudProviders = finalProviders)
+                
+                println("DEBUG: Cloud provider $providerId authenticated successfully")
+                
+            } catch (e: Exception) {
+                println("ERROR: Failed to authenticate cloud provider $providerId: ${e.message}")
+            }
+        }
+    }
+    
+    fun disconnectCloudProvider(providerId: String) {
+        viewModelScope.launch {
+            val currentState = _uiState.value
+            val updatedProviders = currentState.cloudProviders.map { provider ->
+                if (provider.id == providerId) {
+                    provider.copy(
+                        isAuthenticated = false,
+                        connectionStatus = ConnectionStatus.DISCONNECTED,
+                        lastSyncTime = null,
+                        errorMessage = null
+                    )
+                } else provider
+            }
+            
+            _uiState.value = currentState.copy(cloudProviders = updatedProviders)
+            
+            println("DEBUG: Cloud provider $providerId disconnected")
+        }
+    }
+    
+    // 初期化時にCloud Providersを読み込み
+    fun initializeCloudProviders() {
+        refreshCloudProviders(forceRefresh = true)
     }
 
     // Filter functionality
