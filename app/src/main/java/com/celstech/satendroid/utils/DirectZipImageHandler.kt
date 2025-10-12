@@ -271,9 +271,6 @@ class DirectZipImageHandler(private val context: Context) {
     private val maxMemoryUsage = Runtime.getRuntime().maxMemory() / 5 // 最大メモリの20%（25%から削減）
     private val currentMemoryUsage = AtomicLong(0)
 
-    // 位置保存のバッチ処理
-    private val positionQueue = Channel<PositionSaveRequest>(Channel.UNLIMITED)
-
     // ZIP エントリキャッシュ（ファイル全体の読み込み回避）
     private val zipEntryCache = ConcurrentHashMap<String, ZipEntryData>()
 
@@ -300,7 +297,6 @@ class DirectZipImageHandler(private val context: Context) {
         val requestId: String = "${entry.id}_${System.currentTimeMillis()}"
     )
 
-    data class PositionSaveRequest(val zipUri: Uri, val imageIndex: Int, val zipFile: File?)
     data class ZipEntryData(val entries: List<ZipImageEntry>, val lastModified: Long)
     data class PerformanceMetrics(
         val cacheHitRate: Float = 0f,
@@ -314,8 +310,6 @@ class DirectZipImageHandler(private val context: Context) {
     init {
         // プリロードワーカーを開始
         startPreloadWorker()
-        // 位置保存ワーカーを開始
-        startPositionSaveWorker()
     }
 
     /**
@@ -485,38 +479,6 @@ class DirectZipImageHandler(private val context: Context) {
         activePreloadJobs.clear()
 
         println("DEBUG: Canceled $canceledCount active preload jobs due to memory pressure")
-    }
-
-    /**
-     * 位置保存ワーカーの開始（バッチ処理）
-     */
-    @OptIn(ExperimentalCoroutinesApi::class)
-    private fun startPositionSaveWorker() {
-        preloadScope.launch {
-            var lastSaveRequest: PositionSaveRequest?
-
-            for (request in positionQueue) {
-                lastSaveRequest = request
-                // 500ms待機して、その間に新しいリクエストが来れば最新のものを使用
-                delay(500)
-
-                // チャンネルから最新のリクエストを取得
-                var latestRequest = lastSaveRequest
-                while (!positionQueue.isEmpty) {
-                    latestRequest = positionQueue.tryReceive().getOrNull() ?: latestRequest
-                }
-
-                // 最新の位置を保存
-                if (latestRequest != null) {
-                    try {
-                        // 新しいシステムでは位置保存は不要（ファイルを閉じる時に保存）
-                        println("DEBUG: Batch saved position ${latestRequest.imageIndex}")
-                    } catch (_: Exception) {
-                        println("DEBUG: Position save failed")
-                    }
-                }
-            }
-        }
     }
 
     /**
@@ -1163,15 +1125,6 @@ class DirectZipImageHandler(private val context: Context) {
     }
 
     /**
-     * 位置保存（バッチ処理版・内部使用）
-     */
-    private fun saveCurrentPositionBatched(zipUri: Uri, imageIndex: Int, zipFile: File? = null) {
-        preloadScope.launch {
-            positionQueue.send(PositionSaveRequest(zipUri, imageIndex, zipFile))
-        }
-    }
-
-    /**
      * ファイル識別子を生成（public）
      */
     fun generateFileIdentifier(zipUri: Uri, zipFile: File? = null): String {
@@ -1294,13 +1247,6 @@ class DirectZipImageHandler(private val context: Context) {
         preloadScope.launch {
             cleanup()
         }
-    }
-
-    /**
-     * 外部からの位置保存要求を受け付ける（バッチ処理版を内部利用）
-     */
-    fun saveCurrentPosition(zipUri: Uri, imageIndex: Int, zipFile: File? = null) {
-        saveCurrentPositionBatched(zipUri, imageIndex, zipFile)
     }
 
     /**
