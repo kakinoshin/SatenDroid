@@ -2,6 +2,11 @@ package com.celstech.satendroid.viewmodel
 
 import android.content.Context
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -89,13 +94,28 @@ class LocalFileViewModel(
 
     /**
      * 読書進捗をStateとして取得（Compose用）
+     * StateFlowを監視することでキャッシュ更新時に自動再描画
      */
     @Composable
-    fun getReadingProgressState(filePath: String): androidx.compose.runtime.State<com.celstech.satendroid.utils.ReadingProgress?> {
-        return androidx.compose.runtime.remember(filePath) {
-            androidx.compose.runtime.derivedStateOf {
+    fun getReadingProgressState(filePath: String): State<com.celstech.satendroid.utils.ReadingProgress?> {
+        // 初期状態を取得
+        val initialState = remember(filePath) {
+            val state = readingStateManager.getState(filePath)
+            com.celstech.satendroid.utils.ReadingProgress(
+                status = state.status,
+                currentIndex = state.currentPage
+            )
+        }
+        
+        // キャッシュ更新トリガーを監視してStateを生成
+        return produceState(
+            initialValue = initialState,
+            key1 = filePath
+        ) {
+            // StateFlowを監視
+            readingStateManager.cacheUpdateTrigger.collect { _ ->
                 val state = readingStateManager.getState(filePath)
-                com.celstech.satendroid.utils.ReadingProgress(
+                value = com.celstech.satendroid.utils.ReadingProgress(
                     status = state.status,
                     currentIndex = state.currentPage
                 )

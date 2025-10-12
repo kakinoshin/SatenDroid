@@ -37,6 +37,10 @@ class ReadingStateManager(private val context: Context) {
         encodeDefaults = true
     }
 
+    // キャッシュ更新トリガー（UIの再描画用）
+    private val _cacheUpdateTrigger = MutableStateFlow(0L)
+    val cacheUpdateTrigger: StateFlow<Long> = _cacheUpdateTrigger.asStateFlow()
+
     // 設定関連のStateFlow
     private val _reverseSwipeDirection = MutableStateFlow(prefs.getBoolean(KEY_REVERSE_SWIPE_DIRECTION, false))
     val reverseSwipeDirection: StateFlow<Boolean> = _reverseSwipeDirection.asStateFlow()
@@ -70,17 +74,19 @@ class ReadingStateManager(private val context: Context) {
     /**
      * 読書状態をメモリキャッシュに読み込む
      * リスト表示時に一括で呼び出す
+     * リフレッシュ時は常に最新データで上書き
      */
     fun loadStateToCache(filePath: String) {
         val normalizedPath = normalizeFilePath(filePath)
         
-        // すでにキャッシュにある場合はスキップ
-        if (cache.containsKey(normalizedPath)) {
-            return
-        }
-
+        // 常に最新データを読み込む（キャッシュチェックを削除）
         val state = loadFromStorage(normalizedPath)
         cache[normalizedPath] = state
+        
+        // キャッシュ更新を通知（UIの再描画トリガー）
+        _cacheUpdateTrigger.value = System.currentTimeMillis()
+        
+        println("DEBUG: Loaded state to cache - File: ${File(filePath).name}, Status: ${state.status}, Page: ${state.currentPage}/${state.totalPages}")
     }
 
     /**
@@ -150,6 +156,10 @@ class ReadingStateManager(private val context: Context) {
         )
 
         cache[normalizedPath] = newState
+        
+        // キャッシュ更新を通知（UIの再描画トリガー）
+        _cacheUpdateTrigger.value = System.currentTimeMillis()
+        
         println("DEBUG: Updated page in RAM - File: ${File(filePath).name}, Page: $page/$totalPages, Status: ${newState.status}")
     }
 
@@ -174,6 +184,9 @@ class ReadingStateManager(private val context: Context) {
             }
 
             if (success) {
+                // キャッシュ更新を通知（UIの再描画トリガー）
+                _cacheUpdateTrigger.value = System.currentTimeMillis()
+                
                 println("DEBUG: Saved state (SYNC) - File: ${File(filePath).name}, Status: ${state.status}, Page: ${state.currentPage}/${state.totalPages}")
                 Result.success(Unit)
             } else {
@@ -216,6 +229,9 @@ class ReadingStateManager(private val context: Context) {
             remove(key)
         }
         
+        // キャッシュ更新を通知（UIの再描画トリガー）
+        _cacheUpdateTrigger.value = System.currentTimeMillis()
+        
         println("DEBUG: Cleared state for ${File(filePath).name}")
     }
 
@@ -252,6 +268,9 @@ class ReadingStateManager(private val context: Context) {
                 storageKeysToRemove.forEach { remove(it) }
             }
         }
+        
+        // キャッシュ更新を通知（UIの再描画トリガー）
+        _cacheUpdateTrigger.value = System.currentTimeMillis()
         
         println("DEBUG: Cleared ${keysToRemove.size} states for folder: $folderPath")
     }
