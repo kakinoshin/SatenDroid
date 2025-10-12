@@ -114,7 +114,7 @@ fun MainScreen() {
                 // ★ ステップ1: UI状態を「読み込み中」に設定
                 withContext(Dispatchers.Main) {
                     isLoading = true
-                    loadingMessage = "ファイルを準備中..."
+                    loadingMessage = "${file?.name ?: "ファイル"}を準備中..."
                     errorMessage = null
                 }
 
@@ -240,7 +240,7 @@ fun MainScreen() {
                 // ★ ステップ4: 新しいファイルを読み込み（完了を待つ）
                 withContext(Dispatchers.Main) {
                     isLoading = true
-                    loadingMessage = "新しいファイルを準備中..."
+                    loadingMessage = "${newZipFile.name}を準備中..."
                 }
 
                 val imageEntryList = withContext(Dispatchers.IO) {
@@ -492,13 +492,6 @@ fun MainScreen() {
                             color = Color.White,
                             style = MaterialTheme.typography.bodyMedium
                         )
-                        if (state != null) {
-                            Text(
-                                text = "ファイル: ${state.currentZipFile?.name ?: "不明"}",
-                                color = Color.Gray,
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
                     }
                 }
             } else {
