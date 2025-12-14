@@ -664,13 +664,10 @@ class DirectZipImageHandler(private val context: Context) {
 
             println("DEBUG: Added to cache: $addedToCache for ${imageEntry.fileName}")
 
-            if (addedToCache) {
-                // プリロードは基本機能確認後に段階的に有効化
-                if (addedToCache && enablePreload) {
-                    preloadScope.launch {
-                        delay(1000) // 1秒後にプリロード開始（500msから延長してより安定化）
-                        triggerPreload(imageEntry.index)
-                    }
+            if (addedToCache && enablePreload) {
+                preloadScope.launch {
+                    delay(1000) // 1秒後にプリロード開始（500msから延長してより安定化）
+                    triggerPreload(imageEntry.index)
                 }
             }
         } else {
@@ -1252,7 +1249,7 @@ class DirectZipImageHandler(private val context: Context) {
     /**
      * 外部からの位置取得要求
      */
-    fun getSavedPosition(zipUri: Uri, zipFile: File? = null): Int {
+    suspend fun getSavedPosition(zipUri: Uri, zipFile: File? = null): Int {
         val filePath = generateFileIdentifier(zipUri, zipFile)
         val state = readingStateManager.getState(filePath)
         return state.currentPage
@@ -1262,7 +1259,7 @@ class DirectZipImageHandler(private val context: Context) {
      * フォルダー削除処理（簡略化）
      */
     fun onFolderDeleted(folderPath: String) {
-        // フォルダー削除時のデータクリアは不要（age機能で後から削除）
+        // フォルダー削除時のデータクリアは不要（キャッシュマネージャで後から削除）
         // メモリキャッシュのみクリア
         preloadScope.launch {
             try {

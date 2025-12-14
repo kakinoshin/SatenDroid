@@ -227,11 +227,4 @@ class LocalItemFactory(private val context: Context) {
         println("  Page: $currentIndex/${zipFile.totalImageCount}")
         println("  Status: ${state.status}")
     }
-    
-    /**
-     * ファイル削除時に読書状況をクリア
-     */
-    suspend fun clearReadingStatusForFile(filePath: String) {
-        readingStateManager.clearFileState(filePath)
-    }
 }

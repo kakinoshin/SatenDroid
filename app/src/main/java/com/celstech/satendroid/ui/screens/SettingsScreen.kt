@@ -6,6 +6,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -16,16 +17,19 @@ import com.celstech.satendroid.utils.ReadingStateManager
 import com.celstech.satendroid.ui.components.InfoDialog
 import com.celstech.satendroid.settings.DownloadSettings
 import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     readingStateManager: ReadingStateManager,
     directZipHandler: com.celstech.satendroid.utils.DirectZipImageHandler? = null,
-    onBackPressed: () -> Unit
+    onBackPressed: () -> Unit,
+    onNavigateToCacheManager: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val downloadSettings = remember { DownloadSettings.getInstance(context) }
+    val coroutineScope = rememberCoroutineScope()
     
     val reverseSwipeDirection by readingStateManager.reverseSwipeDirection.collectAsState()
     val maxConcurrentDownloads by downloadSettings.maxConcurrentDownloads.collectAsState()
@@ -184,6 +188,18 @@ fun SettingsScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
+                    // キャッシュマネージャへのボタン
+                    Button(
+                        onClick = onNavigateToCacheManager,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Storage, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("読書状態管理")
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
                     OutlinedButton(
                         onClick = { showConfirmClearDialog = true },
                         modifier = Modifier.fillMaxWidth()
@@ -232,7 +248,9 @@ fun SettingsScreen(
             confirmText = "削除",
             dismissText = "キャンセル",
             onConfirm = {
-                readingStateManager.clearAllStates()
+                coroutineScope.launch {
+                    readingStateManager.manuallyDeleteAllStates()
+                }
                 showConfirmClearDialog = false
             },
             onDismiss = { showConfirmClearDialog = false }

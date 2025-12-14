@@ -88,7 +88,7 @@ class LocalFileViewModel(
     /**
      * 読書状態を取得（UIから呼び出される）
      */
-    fun getReadingState(filePath: String): ReadingState {
+    suspend fun getReadingState(filePath: String): ReadingState {
         return readingStateManager.getState(filePath)
     }
 
@@ -100,11 +100,14 @@ class LocalFileViewModel(
     fun getReadingProgressState(filePath: String): State<com.celstech.satendroid.utils.ReadingProgress?> {
         // 初期状態を取得
         val initialState = remember(filePath) {
-            val state = readingStateManager.getState(filePath)
-            com.celstech.satendroid.utils.ReadingProgress(
-                status = state.status,
-                currentIndex = state.currentPage
-            )
+            viewModelScope.launch {
+                val state = readingStateManager.getState(filePath)
+                com.celstech.satendroid.utils.ReadingProgress(
+                    status = state.status,
+                    currentIndex = state.currentPage
+                )
+            }
+            null
         }
         
         // キャッシュ更新トリガーを監視してStateを生成
@@ -127,13 +130,15 @@ class LocalFileViewModel(
      * ページを更新（RAM上のみ、保存はしない）
      */
     fun updateCurrentPage(filePath: String, page: Int, totalPages: Int) {
-        readingStateManager.updateCurrentPage(filePath, page, totalPages)
-        
-        // フィルターが適用されている場合は再適用
-        val currentState = _uiState.value
-        if (currentState.filterType != ReadingFilterType.ALL) {
-            val filteredItems = applyReadingFilter(currentState.localItems, currentState.filterType)
-            _uiState.value = currentState.copy(filteredLocalItems = filteredItems)
+        viewModelScope.launch {
+            readingStateManager.updateCurrentPage(filePath, page, totalPages)
+            
+            // フィルターが適用されている場合は再適用
+            val currentState = _uiState.value
+            if (currentState.filterType != ReadingFilterType.ALL) {
+                val filteredItems = applyReadingFilter(currentState.localItems, currentState.filterType)
+                _uiState.value = currentState.copy(filteredLocalItems = filteredItems)
+            }
         }
     }
 
@@ -461,20 +466,22 @@ class LocalFileViewModel(
 
     // Filter functionality
     fun setReadingFilter(filterType: ReadingFilterType) {
-        val currentState = _uiState.value
-        val newFilteredItems = applyReadingFilter(currentState.localItems, filterType)
+        viewModelScope.launch {
+            val currentState = _uiState.value
+            val newFilteredItems = applyReadingFilter(currentState.localItems, filterType)
 
-        _uiState.value = currentState.copy(
-            filterType = filterType,
-            filteredLocalItems = newFilteredItems,
-            isSelectionMode = false,
-            selectedItems = emptySet()
-        )
+            _uiState.value = currentState.copy(
+                filterType = filterType,
+                filteredLocalItems = newFilteredItems,
+                isSelectionMode = false,
+                selectedItems = emptySet()
+            )
 
-        println("DEBUG: Filter applied - Type: $filterType, Items: ${newFilteredItems.size}/${currentState.localItems.size}")
+            println("DEBUG: Filter applied - Type: $filterType, Items: ${newFilteredItems.size}/${currentState.localItems.size}")
+        }
     }
 
-    private fun applyReadingFilter(
+    private suspend fun applyReadingFilter(
         items: List<LocalItem>,
         filterType: ReadingFilterType
     ): List<LocalItem> {
@@ -633,14 +640,14 @@ class LocalFileViewModel(
         }
     }
 
-    // Delete operations
+    // Delete operations - 自動削除を削除、手動削除のみ
     fun deleteFile(item: LocalItem.ZipFile): Boolean {
         var result = false
         viewModelScope.launch {
             result = repository.deleteFile(item)
             if (result) {
-                readingStateManager.clearFileState(item.file.absolutePath)
-                println("DEBUG: File deleted: ${item.file.name}")
+                // ファイル削除時も読書状態は保持（手動削除のみ）
+                println("DEBUG: File deleted (state preserved): ${item.file.name}")
             }
         }
         return result
@@ -651,9 +658,9 @@ class LocalFileViewModel(
             try {
                 val result = repository.deleteFolder(item)
                 if (result) {
-                    readingStateManager.clearFolderStates(item.path)
+                    // フォルダ削除時も読書状態は保持（手動削除のみ）
                     directZipHandler.onFolderDeleted(item.path)
-                    println("DEBUG: ViewModel - Folder deleted successfully: ${item.name}")
+                    println("DEBUG: ViewModel - Folder deleted (states preserved): ${item.name}")
                     scanDirectory(_uiState.value.currentPath)
                 } else {
                     println("DEBUG: ViewModel - Failed to delete folder: ${item.name}")
@@ -669,14 +676,13 @@ class LocalFileViewModel(
         viewModelScope.launch {
             repository.deleteItems(_uiState.value.selectedItems)
 
+            // ファイル/フォルダ削除時も読書状態は保持（手動削除のみ）
             _uiState.value.selectedItems.forEach { item ->
                 when (item) {
                     is LocalItem.ZipFile -> {
-                        readingStateManager.clearFileState(item.file.absolutePath)
-                        println("DEBUG: File deleted in batch: ${item.file.name}")
+                        println("DEBUG: File deleted in batch (state preserved): ${item.file.name}")
                     }
                     is LocalItem.Folder -> {
-                        readingStateManager.clearFolderStates(item.path)
                         directZipHandler.onFolderDeleted(item.path)
                     }
                 }

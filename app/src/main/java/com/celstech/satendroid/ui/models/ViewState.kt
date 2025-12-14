@@ -14,6 +14,7 @@ sealed class ViewState {
     object DropboxBrowser : ViewState()
     object DownloadQueue : ViewState()  // 新しいダウンロードキュー画面
     object Settings : ViewState()
+    object CacheManager : ViewState()   // キャッシュマネージャ画面
 }
 
 /**

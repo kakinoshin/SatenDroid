@@ -4,32 +4,39 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.core.content.edit
 import com.celstech.satendroid.ui.models.ReadingStatus
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.io.FileInputStream
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 既読情報管理システム - 再設計版
+ * 既読情報管理システム - ファイルハッシュベース版
  *
  * 設計原則:
- * 1. 単一責任: 状態管理と永続化のみ
- * 2. 同期保存: commit()のみ使用
+ * 1. ファイルハッシュ（MD5）による識別 - パス変更に対応
+ * 2. 手動削除のみ - ファイル削除時も情報を保持
  * 3. 単一キャッシュ: メモリキャッシュが唯一の真実の源
- * 4. シンプル: 不要な機能は削除
+ * 4. 永続化: SharedPreferencesに保存
  */
 class ReadingStateManager(private val context: Context) {
 
     private val prefs: SharedPreferences = context.getSharedPreferences(
-        "reading_states_v2",
+        "reading_states_v3",  // バージョンアップ
         Context.MODE_PRIVATE
     )
 
-    // 単一メモリキャッシュ（唯一の真実の源）
+    // ファイルハッシュキャッシュ（ファイルパス -> MD5ハッシュ）
+    private val hashCache = ConcurrentHashMap<String, String>()
+    
+    // 読書状態キャッシュ（ファイルハッシュ -> ReadingState）
     private val cache = ConcurrentHashMap<String, ReadingState>()
 
     private val json = Json {
@@ -50,73 +57,155 @@ class ReadingStateManager(private val context: Context) {
 
     companion object {
         private const val KEY_PREFIX = "state_"
+        private const val KEY_HASH_PREFIX = "hash_"
         private const val KEY_REVERSE_SWIPE_DIRECTION = "reverse_swipe_direction"
         private const val KEY_CACHE_ENABLED = "cache_enabled"
     }
 
     /**
-     * ファイルパスを正規化
+     * ファイルのMD5ハッシュを計算（最初の1MBのみ使用で高速化）
      */
-    private fun normalizeFilePath(filePath: String): String {
-        return filePath
-            .replace("\\", "/")
-            .replace("//+".toRegex(), "/")
-            .removeSuffix("/")
+    suspend fun calculateFileHash(file: File): String? = withContext(Dispatchers.IO) {
+        try {
+            if (!file.exists() || !file.canRead()) {
+                println("DEBUG: Cannot read file for hash calculation: ${file.absolutePath}")
+                return@withContext null
+            }
+
+            val md = MessageDigest.getInstance("MD5")
+            val bufferSize = 8192
+            val buffer = ByteArray(bufferSize)
+            val maxBytes = 1024 * 1024 // 1MB（高速化のため）
+
+            FileInputStream(file).use { fis ->
+                var totalRead = 0
+                var bytesRead: Int
+                
+                while (totalRead < maxBytes) {
+                    bytesRead = fis.read(buffer)
+                    if (bytesRead == -1) break
+                    
+                    val toUpdate = minOf(bytesRead, maxBytes - totalRead)
+                    md.update(buffer, 0, toUpdate)
+                    totalRead += toUpdate
+                }
+            }
+
+            val digest = md.digest()
+            val hash = digest.joinToString("") { "%02x".format(it) }
+            
+            println("DEBUG: Calculated file hash - File: ${file.name}, Hash: ${hash.take(8)}...")
+            hash
+            
+        } catch (e: Exception) {
+            println("ERROR: Failed to calculate file hash: ${e.message}")
+            e.printStackTrace()
+            null
+        }
     }
 
     /**
-     * ストレージキーを生成
+     * ファイルハッシュを取得（キャッシュ優先）
      */
-    private fun getStorageKey(filePath: String): String {
-        return KEY_PREFIX + normalizeFilePath(filePath).hashCode()
+    private suspend fun getFileHash(file: File): String? {
+        val filePath = file.absolutePath
+        
+        // メモリキャッシュから取得
+        hashCache[filePath]?.let { 
+            println("DEBUG: Using cached file hash for ${file.name}")
+            return it 
+        }
+        
+        // SharedPreferencesから取得
+        val cachedHash = prefs.getString(KEY_HASH_PREFIX + filePath, null)
+        if (cachedHash != null) {
+            hashCache[filePath] = cachedHash
+            println("DEBUG: Loaded file hash from storage for ${file.name}")
+            return cachedHash
+        }
+        
+        // 新規計算
+        val newHash = calculateFileHash(file)
+        if (newHash != null) {
+            hashCache[filePath] = newHash
+            // SharedPreferencesに保存
+            prefs.edit(commit = true) {
+                putString(KEY_HASH_PREFIX + filePath, newHash)
+            }
+        }
+        
+        return newHash
     }
+
+    /**
+     * ファイルパスからファイルハッシュを取得（公開API）
+     */
+    suspend fun getFileHashByPath(filePath: String): String? {
+        val file = File(filePath)
+        return getFileHash(file)
+    }
+
+    /**
+     * ストレージキーを生成（ファイルハッシュベース）
+     */
+    private fun getStorageKey(fileHash: String): String {
+        return KEY_PREFIX + fileHash
+    }
+
 
     /**
      * 読書状態をメモリキャッシュに読み込む
-     * リスト表示時に一括で呼び出す
-     * リフレッシュ時は常に最新データで上書き
+     * ファイルハッシュベースで管理
      */
-    fun loadStateToCache(filePath: String) {
-        val normalizedPath = normalizeFilePath(filePath)
+    suspend fun loadStateToCache(filePath: String) {
+        val file = File(filePath)
+        val fileHash = getFileHash(file) ?: run {
+            println("DEBUG: Cannot load state - file hash unavailable for ${file.name}")
+            return
+        }
         
-        // 常に最新データを読み込む（キャッシュチェックを削除）
-        val state = loadFromStorage(normalizedPath)
-        cache[normalizedPath] = state
+        // 常に最新データを読み込む
+        val state = loadFromStorage(fileHash, filePath)
+        cache[fileHash] = state
         
         // キャッシュ更新を通知（UIの再描画トリガー）
         _cacheUpdateTrigger.value = System.currentTimeMillis()
         
-        println("DEBUG: Loaded state to cache - File: ${File(filePath).name}, Status: ${state.status}, Page: ${state.currentPage}/${state.totalPages}")
+        println("DEBUG: Loaded state to cache - File: ${file.name}, Hash: ${fileHash.take(8)}..., Status: ${state.status}, Page: ${state.currentPage}/${state.totalPages}")
     }
 
     /**
      * Storageから読書状態を読み込む（内部用）
      */
-    private fun loadFromStorage(normalizedPath: String): ReadingState {
-        val key = getStorageKey(normalizedPath)
+    private fun loadFromStorage(fileHash: String, filePath: String): ReadingState {
+        val key = getStorageKey(fileHash)
         val jsonString = prefs.getString(key, null)
 
         return if (jsonString != null) {
             try {
-                json.decodeFromString<ReadingState>(jsonString)
+                json.decodeFromString<ReadingState>(jsonString).copy(
+                    currentFilePath = filePath // 現在のパスを更新
+                )
             } catch (e: Exception) {
                 println("ERROR: Failed to decode reading state: ${e.message}")
-                createDefaultState()
+                createDefaultState(filePath)
             }
         } else {
-            createDefaultState()
+            createDefaultState(filePath)
         }
     }
 
     /**
      * デフォルト状態を作成
      */
-    private fun createDefaultState(): ReadingState {
+    private fun createDefaultState(filePath: String = ""): ReadingState {
         return ReadingState(
             status = ReadingStatus.UNREAD,
             currentPage = 0,
             totalPages = 0,
-            lastUpdated = System.currentTimeMillis()
+            lastUpdated = System.currentTimeMillis(),
+            fileHash = "",
+            currentFilePath = filePath
         )
     }
 
@@ -124,57 +213,68 @@ class ReadingStateManager(private val context: Context) {
      * 読書状態を取得（メモリキャッシュから）
      * UIはこのメソッドを使用する
      */
-    fun getState(filePath: String): ReadingState {
-        val normalizedPath = normalizeFilePath(filePath)
+    suspend fun getState(filePath: String): ReadingState {
+        val file = File(filePath)
+        val fileHash = getFileHash(file) ?: return createDefaultState(filePath)
         
         // メモリキャッシュから取得
-        val cachedState = cache[normalizedPath]
+        val cachedState = cache[fileHash]
         if (cachedState != null) {
-            return cachedState
+            return cachedState.copy(currentFilePath = filePath)
         }
 
         // キャッシュにない場合はStorageから読み込んでキャッシュに保存
-        val state = loadFromStorage(normalizedPath)
-        cache[normalizedPath] = state
+        val state = loadFromStorage(fileHash, filePath)
+        cache[fileHash] = state
         return state
     }
 
     /**
      * 現在のページを更新（RAM上のみ、保存はしない）
-     * ページ移動時に呼び出す
      */
-    fun updateCurrentPage(filePath: String, page: Int, totalPages: Int) {
-        val normalizedPath = normalizeFilePath(filePath)
-        val currentState = cache[normalizedPath] ?: loadFromStorage(normalizedPath)
+    suspend fun updateCurrentPage(filePath: String, page: Int, totalPages: Int) {
+        val file = File(filePath)
+        val fileHash = getFileHash(file) ?: run {
+            println("DEBUG: Cannot update page - file hash unavailable for ${file.name}")
+            return
+        }
+        
+        val currentState = cache[fileHash] ?: loadFromStorage(fileHash, filePath)
 
         val newState = currentState.copy(
             currentPage = page,
             totalPages = totalPages,
             status = determineStatus(page, totalPages),
             lastUpdated = System.currentTimeMillis(),
-            filePath = normalizedPath
+            fileHash = fileHash,
+            currentFilePath = filePath
         )
 
-        cache[normalizedPath] = newState
+        cache[fileHash] = newState
         
         // キャッシュ更新を通知（UIの再描画トリガー）
         _cacheUpdateTrigger.value = System.currentTimeMillis()
         
-        println("DEBUG: Updated page in RAM - File: ${File(filePath).name}, Page: $page/$totalPages, Status: ${newState.status}")
+        println("DEBUG: Updated page in RAM - File: ${file.name}, Hash: ${fileHash.take(8)}..., Page: $page/$totalPages, Status: ${newState.status}")
     }
 
     /**
      * 読書状態を同期保存（ファイルを閉じる時のみ呼び出す）
-     * 
-     * @return 保存成功時はResult.success、失敗時はResult.failure
      */
-    fun saveStateSync(filePath: String): Result<Unit> {
+    suspend fun saveStateSync(filePath: String): Result<Unit> {
         return try {
-            val normalizedPath = normalizeFilePath(filePath)
-            val state = cache[normalizedPath] ?: return Result.success(Unit) // キャッシュにない場合は何もしない
+            val file = File(filePath)
+            val fileHash = getFileHash(file) ?: return Result.failure(
+                Exception("Cannot save state - file hash unavailable")
+            )
+            
+            val state = cache[fileHash] ?: return Result.success(Unit)
 
-            val key = getStorageKey(normalizedPath)
-            val stateToSave = state.copy(filePath = normalizedPath)
+            val key = getStorageKey(fileHash)
+            val stateToSave = state.copy(
+                fileHash = fileHash,
+                currentFilePath = filePath
+            )
             val jsonString = json.encodeToString(stateToSave)
 
             // commit()を使用して同期保存
@@ -184,10 +284,10 @@ class ReadingStateManager(private val context: Context) {
             }
 
             if (success) {
-                // キャッシュ更新を通知（UIの再描画トリガー）
+                // キャッシュ更新を通知
                 _cacheUpdateTrigger.value = System.currentTimeMillis()
                 
-                println("DEBUG: Saved state (SYNC) - File: ${File(filePath).name}, Status: ${state.status}, Page: ${state.currentPage}/${state.totalPages}")
+                println("DEBUG: Saved state (SYNC) - File: ${file.name}, Hash: ${fileHash.take(8)}..., Status: ${state.status}, Page: ${state.currentPage}/${state.totalPages}")
                 Result.success(Unit)
             } else {
                 val error = Exception("Failed to commit reading state to SharedPreferences")
@@ -214,79 +314,98 @@ class ReadingStateManager(private val context: Context) {
         }
     }
 
+
     /**
-     * ファイルの状態をクリア
+     * ファイルの状態を手動削除（キャッシュマネージャから呼び出される）
      */
-    fun clearFileState(filePath: String) {
-        val normalizedPath = normalizeFilePath(filePath)
-        
+    suspend fun manuallyDeleteState(fileHash: String) {
         // メモリキャッシュから削除
-        cache.remove(normalizedPath)
+        cache.remove(fileHash)
         
         // Storageから削除
-        val key = getStorageKey(normalizedPath)
+        val key = getStorageKey(fileHash)
         prefs.edit(commit = true) {
             remove(key)
         }
         
-        // キャッシュ更新を通知（UIの再描画トリガー）
+        // キャッシュ更新を通知
         _cacheUpdateTrigger.value = System.currentTimeMillis()
         
-        println("DEBUG: Cleared state for ${File(filePath).name}")
+        println("DEBUG: Manually deleted state for hash: ${fileHash.take(8)}...")
     }
 
     /**
-     * フォルダー内の全ファイル状態をクリア
+     * 複数の状態を手動削除
      */
-    fun clearFolderStates(folderPath: String) {
-        val normalizedFolderPath = normalizeFilePath(folderPath)
+    suspend fun manuallyDeleteStates(fileHashes: List<String>) {
+        fileHashes.forEach { hash ->
+            cache.remove(hash)
+        }
         
-        // メモリキャッシュから削除
-        val keysToRemove = cache.keys.filter { it.contains(normalizedFolderPath) }
-        keysToRemove.forEach { cache.remove(it) }
+        prefs.edit(commit = true) {
+            fileHashes.forEach { hash ->
+                remove(getStorageKey(hash))
+            }
+        }
         
-        // Storageから削除
+        _cacheUpdateTrigger.value = System.currentTimeMillis()
+        println("DEBUG: Manually deleted ${fileHashes.size} states")
+    }
+
+    /**
+     * 全状態を手動削除
+     */
+    suspend fun manuallyDeleteAllStates() {
+        cache.clear()
+        hashCache.clear()
+        
+        val allKeys = prefs.all.keys.filter { it.startsWith(KEY_PREFIX) || it.startsWith(KEY_HASH_PREFIX) }
+        prefs.edit(commit = true) {
+            allKeys.forEach { remove(it) }
+        }
+        
+        _cacheUpdateTrigger.value = System.currentTimeMillis()
+        println("DEBUG: Manually deleted all reading states and hash cache")
+    }
+
+    /**
+     * 保存されている全状態を取得（キャッシュマネージャ用）
+     */
+    suspend fun getAllSavedStates(): List<SavedStateInfo> = withContext(Dispatchers.IO) {
         val allKeys = prefs.all.keys.filter { it.startsWith(KEY_PREFIX) }
-        val storageKeysToRemove = mutableListOf<String>()
+        val states = mutableListOf<SavedStateInfo>()
         
         allKeys.forEach { key ->
             try {
                 val jsonString = prefs.getString(key, null)
                 if (jsonString != null) {
                     val state = json.decodeFromString<ReadingState>(jsonString)
-                    if (state.filePath.contains(normalizedFolderPath)) {
-                        storageKeysToRemove.add(key)
-                    }
+                    val fileHash = key.removePrefix(KEY_PREFIX)
+                    
+                    // 現在のファイルパスが存在するかチェック
+                    val fileExists = state.currentFilePath.isNotEmpty() && 
+                                    File(state.currentFilePath).exists()
+                    
+                    states.add(
+                        SavedStateInfo(
+                            fileHash = fileHash,
+                            fileName = state.currentFilePath.substringAfterLast('/'),
+                            filePath = state.currentFilePath,
+                            fileExists = fileExists,
+                            status = state.status,
+                            currentPage = state.currentPage,
+                            totalPages = state.totalPages,
+                            lastUpdated = state.lastUpdated
+                        )
+                    )
                 }
             } catch (e: Exception) {
-                // 解析エラーの場合はスキップ
+                println("ERROR: Failed to load saved state for key $key: ${e.message}")
             }
         }
         
-        if (storageKeysToRemove.isNotEmpty()) {
-            prefs.edit(commit = true) {
-                storageKeysToRemove.forEach { remove(it) }
-            }
-        }
-        
-        // キャッシュ更新を通知（UIの再描画トリガー）
-        _cacheUpdateTrigger.value = System.currentTimeMillis()
-        
-        println("DEBUG: Cleared ${keysToRemove.size} states for folder: $folderPath")
-    }
-
-    /**
-     * 全状態をクリア
-     */
-    fun clearAllStates() {
-        cache.clear()
-        
-        val allKeys = prefs.all.keys.filter { it.startsWith(KEY_PREFIX) }
-        prefs.edit(commit = true) {
-            allKeys.forEach { remove(it) }
-        }
-        
-        println("DEBUG: Cleared all reading states")
+        // 最終更新日時の降順でソート
+        states.sortedByDescending { it.lastUpdated }
     }
 
     /**
@@ -294,6 +413,7 @@ class ReadingStateManager(private val context: Context) {
      */
     fun clearMemoryCache() {
         cache.clear()
+        hashCache.clear()
         println("DEBUG: Cleared memory cache")
     }
 
@@ -322,22 +442,26 @@ class ReadingStateManager(private val context: Context) {
     /**
      * デバッグ用: 状態を表示
      */
-    fun debugPrintState(filePath: String) {
+    suspend fun debugPrintState(filePath: String) {
         val state = getState(filePath)
+        val file = File(filePath)
+        val fileHash = getFileHash(file)
+        
         println("=== ReadingStateManager Debug ===")
-        println("File: ${File(filePath).name}")
-        println("Path: ${state.filePath}")
+        println("File: ${file.name}")
+        println("Path: ${state.currentFilePath}")
+        println("Hash: ${fileHash?.take(8)}...")
         println("Status: ${state.status}")
         println("Current Page: ${state.currentPage}")
         println("Total Pages: ${state.totalPages}")
         println("Last Updated: ${state.lastUpdated}")
-        println("In Cache: ${cache.containsKey(normalizeFilePath(filePath))}")
+        println("In Cache: ${fileHash?.let { cache.containsKey(it) } ?: false}")
         println("=================================")
     }
 }
 
 /**
- * 読書状態データクラス
+ * 読書状態データクラス（ファイルハッシュベース）
  */
 @Serializable
 data class ReadingState(
@@ -345,7 +469,8 @@ data class ReadingState(
     val currentPage: Int,
     val totalPages: Int,
     val lastUpdated: Long,
-    val filePath: String = "" // シリアライズ時のみ使用
+    val fileHash: String = "", // ファイルのMD5ハッシュ
+    val currentFilePath: String = "" // 現在のファイルパス（参考用）
 ) {
     /**
      * 進捗率（0.0 - 1.0）
@@ -386,6 +511,36 @@ data class ReadingState(
      */
     val isUnread: Boolean
         get() = status == ReadingStatus.UNREAD
+}
+
+/**
+ * 保存された状態情報（キャッシュマネージャ用）
+ */
+data class SavedStateInfo(
+    val fileHash: String,
+    val fileName: String,
+    val filePath: String,
+    val fileExists: Boolean,
+    val status: ReadingStatus,
+    val currentPage: Int,
+    val totalPages: Int,
+    val lastUpdated: Long
+) {
+    val progressText: String
+        get() = when (status) {
+            ReadingStatus.UNREAD -> "未読"
+            ReadingStatus.READING -> {
+                if (totalPages > 0) {
+                    "読書中 ${currentPage + 1}/$totalPages"
+                } else {
+                    "読書中"
+                }
+            }
+            ReadingStatus.COMPLETED -> "読了"
+        }
+    
+    val progressRatio: Float
+        get() = if (totalPages > 0) (currentPage + 1).toFloat() / totalPages else 0f
 }
 
 /**

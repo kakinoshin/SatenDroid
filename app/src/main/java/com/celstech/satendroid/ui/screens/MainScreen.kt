@@ -539,15 +539,17 @@ fun MainScreen() {
                     readingStateManager = readingStateManager,
                     directZipHandler = directZipHandler,
                     onPageChanged = { currentPage, totalPages, zipFile ->
-                        // ★ DirectZipHandlerにページ変更を通知
-                        directZipHandler.updateCurrentPage(currentPage)
-                        
-                        // ★ ReadingStateManagerにも通知（メモリ更新のみ、保存はしない）
-                        zipFile?.absolutePath?.let { filePath ->
-                            readingStateManager.updateCurrentPage(filePath, currentPage, totalPages)
-                        }
+                        coroutineScope.launch {
+                            // ★ DirectZipHandlerにページ変更を通知
+                            directZipHandler.updateCurrentPage(currentPage)
+                            
+                            // ★ ReadingStateManagerにも通知（メモリ更新のみ、保存はしない）
+                            zipFile?.absolutePath?.let { filePath ->
+                                readingStateManager.updateCurrentPage(filePath, currentPage, totalPages)
+                            }
 
-                        println("DEBUG: Page changed notification - Page: $currentPage/$totalPages")
+                            println("DEBUG: Page changed notification - Page: $currentPage/$totalPages")
+                        }
                     }
                 )
             }
@@ -586,6 +588,17 @@ fun MainScreen() {
                 directZipHandler = directZipHandler,
                 onBackPressed = {
                     currentView = ViewState.LocalFileList
+                },
+                onNavigateToCacheManager = {
+                    currentView = ViewState.CacheManager
+                }
+            )
+        }
+
+        is ViewState.CacheManager -> {
+            CacheManagerScreen(
+                onNavigateBack = {
+                    currentView = ViewState.Settings
                 }
             )
         }
