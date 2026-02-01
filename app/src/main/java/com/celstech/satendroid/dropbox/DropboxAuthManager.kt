@@ -5,12 +5,14 @@ import android.content.Intent
 import android.net.Uri
 import com.celstech.satendroid.BuildConfig
 import com.dropbox.core.DbxRequestConfig
+import com.dropbox.core.http.OkHttp3Requestor
 import com.dropbox.core.oauth.DbxCredential
 import com.dropbox.core.v2.DbxClientV2
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
 import java.security.MessageDigest
 import java.util.*
 
@@ -85,7 +87,11 @@ class DropboxAuthManager(private val context: Context) {
         println("DEBUG: Creating authenticated client with token: ${accessToken.take(8)}...")
         try {
             val credential = DbxCredential(accessToken, expiresAt, refreshToken, APP_KEY)
-            val requestConfig = DbxRequestConfig.newBuilder("SatenDroid/1.0").build()
+            val okHttp = OkHttpClient.Builder().build()
+            val requestor = OkHttp3Requestor(okHttp)
+            val requestConfig = DbxRequestConfig.newBuilder("SatenDroid/1.0")
+                .withHttpRequestor(requestor)
+                .build()
             dropboxClient = DbxClientV2(requestConfig, credential)
             _authState.value = DropboxAuthState.Authenticated(dropboxClient!!)
             println("DEBUG: Authenticated client created successfully")

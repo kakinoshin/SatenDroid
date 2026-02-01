@@ -96,6 +96,7 @@ dependencies {
 
     // Dropbox SDK - updated to use only the core SDK
     implementation("com.dropbox.core:dropbox-core-sdk:5.4.5")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // Coroutines for async operations
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
