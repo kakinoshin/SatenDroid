@@ -2,44 +2,34 @@ package com.celstech.satendroid.download.downloader
 
 import com.celstech.satendroid.dropbox.DropboxAuthManager
 import com.celstech.satendroid.dropbox.DropboxAuthState
+import com.celstech.satendroid.dropbox.SafeDropboxClient
 import com.celstech.satendroid.download.exceptions.DownloadException
 import com.celstech.satendroid.ui.models.CloudType
 import com.celstech.satendroid.ui.models.DownloadProgressInfo
 import com.celstech.satendroid.ui.models.DownloadRequest
 import com.celstech.satendroid.ui.models.DownloadResult
 import com.celstech.satendroid.ui.models.DownloadStatus
-import com.celstech.satendroid.utils.FormatUtils
-import com.dropbox.core.v2.DbxClientV2
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
-import java.io.BufferedOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.coroutineContext
 
-/**
- * Dropbox用ダウンローダー実装
- */
-class DropboxDownloader(
-    private val authManager: DropboxAuthManager
-) : CloudDownloader {
+class DropboxDownloader(private val authManager: DropboxAuthManager) : CloudDownloader {
 
     override val cloudType: CloudType = CloudType.DROPBOX
-
-    // アクティブなダウンロードを追跡
     private val activeDownloads = ConcurrentHashMap<String, Boolean>()
 
     override suspend fun isAuthenticationRequired(): Boolean {
-        return !authManager.isAuthenticated()
+        // Check against the state machine instead of the old boolean function
+        return authManager.authState.value !is DropboxAuthState.Authenticated
     }
 
-    override suspend fun initialize() {
-        // 初期化処理（必要に応じて）
-    }
+    override suspend fun initialize() {}
 
     override suspend fun cleanup() {
-        // クリーンアップ処理
         activeDownloads.clear()
     }
 
@@ -47,203 +37,62 @@ class DropboxDownloader(
         request: DownloadRequest,
         progressCallback: (DownloadProgressInfo) -> Unit
     ): DownloadResult = withContext(Dispatchers.IO) {
-        
-        // 認証状態確認
         val authState = authManager.authState.value
         if (authState !is DropboxAuthState.Authenticated) {
             return@withContext DownloadResult.Failure("Dropbox authentication required")
         }
 
-        val client = authState.client
         activeDownloads[request.id] = true
-
         try {
-            // 初期進捗通知
-            progressCallback(
-                DownloadProgressInfo(
-                    downloadId = request.id,
-                    status = DownloadStatus.DOWNLOADING,
-                    fileName = request.fileName,
-                    bytesDownloaded = 0L,
-                    totalBytes = request.fileSize,
-                    downloadSpeed = 0.0,
-                    estimatedTimeRemaining = 0L
-                )
+            val localFile = File(request.localPath, request.fileName)
+            localFile.parentFile?.mkdirs()
+
+            val result = downloadFileInternal(
+                client = authState.client,
+                request = request,
+                localFile = localFile,
+                progressCallback = progressCallback
             )
 
-            // ローカルファイルの準備
-            val localFile = File(request.localPath, request.fileName)
-            val parentDir = localFile.parentFile
-            if (parentDir != null && !parentDir.exists()) {
-                val created = parentDir.mkdirs()
-                if (!created && !parentDir.exists()) {
-                    return@withContext DownloadResult.Failure("Failed to create directory: ${parentDir.absolutePath}")
-                }
+            // Final progress update based on result
+            val finalStatus = when (result) {
+                is DownloadResult.Success -> DownloadStatus.COMPLETED
+                is DownloadResult.Failure -> DownloadStatus.FAILED
+                is DownloadResult.Cancelled -> DownloadStatus.CANCELLED
             }
-
-            // ダウンロード実行
-            val result = downloadFileInternal(client, request, localFile, progressCallback)
-            
-            // 最終進捗通知
-            when (result) {
-                is DownloadResult.Success -> {
-                    progressCallback(
-                        DownloadProgressInfo(
-                            downloadId = request.id,
-                            status = DownloadStatus.COMPLETED,
-                            fileName = request.fileName,
-                            bytesDownloaded = request.fileSize,
-                            totalBytes = request.fileSize,
-                            downloadSpeed = 0.0,
-                            estimatedTimeRemaining = 0L,
-                            completedTime = System.currentTimeMillis()
-                        )
-                    )
-                }
-                is DownloadResult.Failure -> {
-                    progressCallback(
-                        DownloadProgressInfo(
-                            downloadId = request.id,
-                            status = DownloadStatus.FAILED,
-                            fileName = request.fileName,
-                            bytesDownloaded = 0L,
-                            totalBytes = request.fileSize,
-                            downloadSpeed = 0.0,
-                            estimatedTimeRemaining = 0L,
-                            errorMessage = result.error
-                        )
-                    )
-                }
-                is DownloadResult.Cancelled -> {
-                    progressCallback(
-                        DownloadProgressInfo(
-                            downloadId = request.id,
-                            status = DownloadStatus.CANCELLED,
-                            fileName = request.fileName,
-                            bytesDownloaded = 0L,
-                            totalBytes = request.fileSize,
-                            downloadSpeed = 0.0,
-                            estimatedTimeRemaining = 0L
-                        )
-                    )
-                }
-            }
+            progressCallback(request.toProgressInfo(finalStatus, result.getErrorMessageOrNull()))
 
             result
-
         } catch (e: Exception) {
-            val errorMessage = when (e) {
-                is DownloadException.CancelledException -> {
-                    progressCallback(
-                        DownloadProgressInfo(
-                            downloadId = request.id,
-                            status = DownloadStatus.CANCELLED,
-                            fileName = request.fileName,
-                            bytesDownloaded = 0L,
-                            totalBytes = request.fileSize,
-                            downloadSpeed = 0.0,
-                            estimatedTimeRemaining = 0L
-                        )
-                    )
-                    return@withContext DownloadResult.Cancelled
-                }
-                else -> "Download failed: ${e.message}"
+            val result = when (e) {
+                is DownloadException.CancelledException -> DownloadResult.Cancelled
+                else -> DownloadResult.Failure("Download failed: ${e.message}", e)
             }
-
-            progressCallback(
-                DownloadProgressInfo(
-                    downloadId = request.id,
-                    status = DownloadStatus.FAILED,
-                    fileName = request.fileName,
-                    bytesDownloaded = 0L,
-                    totalBytes = request.fileSize,
-                    downloadSpeed = 0.0,
-                    estimatedTimeRemaining = 0L,
-                    errorMessage = errorMessage
-                )
-            )
-
-            DownloadResult.Failure(errorMessage, e)
+            progressCallback(request.toProgressInfo(DownloadStatus.FAILED, result.getErrorMessageOrNull()))
+            result
         } finally {
             activeDownloads.remove(request.id)
         }
     }
 
     private suspend fun downloadFileInternal(
-        client: DbxClientV2,
+        client: SafeDropboxClient,
         request: DownloadRequest,
         localFile: File,
         progressCallback: (DownloadProgressInfo) -> Unit
-    ): DownloadResult = withContext(Dispatchers.IO) {
-        
-        try {
-            val downloader = client.files().download(request.remotePath)
-            val outputStream = BufferedOutputStream(localFile.outputStream(), 65536)
-            val buffer = ByteArray(65536) // 64KB buffer
-            var bytesDownloaded = 0L
-            var lastUpdateTime = 0L
-            val updateInterval = 500L // Update UI every 500ms
-            val startTime = System.currentTimeMillis()
-
-            val inputStream = downloader.inputStream
-
-            try {
-                var bytesRead: Int
-                while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                    // キャンセルチェック
-                    if (!coroutineContext.isActive || activeDownloads[request.id] != true) {
-                        throw DownloadException.CancelledException()
-                    }
-
-                    outputStream.write(buffer, 0, bytesRead)
-                    bytesDownloaded += bytesRead
-
-                    // 進捗更新（スロットリング付き）
-                    val currentTime = System.currentTimeMillis()
-                    if (currentTime - lastUpdateTime > updateInterval) {
-                        val elapsedTime = (currentTime - startTime) / 1000.0 // seconds
-                        val speed = if (elapsedTime > 0) bytesDownloaded / elapsedTime else 0.0
-                        val remaining = if (speed > 0) (request.fileSize - bytesDownloaded) / speed else 0.0
-
-                        progressCallback(
-                            DownloadProgressInfo(
-                                downloadId = request.id,
-                                status = DownloadStatus.DOWNLOADING,
-                                fileName = request.fileName,
-                                bytesDownloaded = bytesDownloaded,
-                                totalBytes = request.fileSize,
-                                downloadSpeed = speed,
-                                estimatedTimeRemaining = remaining.toLong()
-                            )
-                        )
-                        lastUpdateTime = currentTime
-                    }
-                }
-
-                // ファイルサイズの検証
-                if (bytesDownloaded != request.fileSize && request.fileSize > 0) {
-                    return@withContext DownloadResult.Failure("File size mismatch: expected ${request.fileSize}, got $bytesDownloaded")
-                }
-
-                DownloadResult.Success(localFile.absolutePath)
-
-            } finally {
-                inputStream.close()
-                outputStream.close()
+    ): DownloadResult {
+        return try {
+            FileOutputStream(localFile).use { outputStream ->
+                // The new SafeDropboxClient handles the core download logic and exceptions
+                client.download(request.remotePath, outputStream)
             }
-
+            DownloadResult.Success(localFile.absolutePath)
         } catch (e: DownloadException.CancelledException) {
-            // キャンセルされた場合、部分ファイルを削除
-            if (localFile.exists()) {
-                localFile.delete()
-            }
-            throw e
+            localFile.delete()
+            DownloadResult.Cancelled
         } catch (e: Exception) {
-            // エラーの場合、部分ファイルを削除
-            if (localFile.exists()) {
-                localFile.delete()
-            }
-            throw DownloadException.NetworkException("Failed to download from Dropbox: ${e.message}", e)
+            localFile.delete()
+            DownloadResult.Failure("Failed to download from Dropbox: ${e.message}", e)
         }
     }
 
@@ -251,13 +100,23 @@ class DropboxDownloader(
         activeDownloads[downloadId] = false
     }
 
-    override suspend fun pauseDownload(downloadId: String): Boolean {
-        // Dropboxは一時停止をサポートしていない
-        return false
-    }
+    override suspend fun pauseDownload(downloadId: String): Boolean = false
 
-    override suspend fun resumeDownload(downloadId: String): Boolean {
-        // Dropboxは再開をサポートしていない
-        return false
-    }
+    override suspend fun resumeDownload(downloadId: String): Boolean = false
+}
+
+private fun DownloadRequest.toProgressInfo(status: DownloadStatus, errorMessage: String? = null) = DownloadProgressInfo(
+    downloadId = this.id,
+    status = status,
+    fileName = this.fileName,
+    bytesDownloaded = if (status == DownloadStatus.COMPLETED) this.fileSize else 0L,
+    totalBytes = this.fileSize,
+    downloadSpeed = 0.0,
+    estimatedTimeRemaining = 0L,
+    errorMessage = errorMessage,
+    completedTime = if (status == DownloadStatus.COMPLETED) System.currentTimeMillis() else null
+)
+
+private fun DownloadResult.getErrorMessageOrNull(): String? {
+    return if (this is DownloadResult.Failure) this.error else null
 }
