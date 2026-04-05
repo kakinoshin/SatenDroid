@@ -455,7 +455,7 @@ fun DirectZipImageViewerScreen(
 
 /**
  * シンプルな画像表示コンポーネント
- * DirectZipHandlerから直接ByteArrayを取得してAsyncImagePainterに渡す
+ * Coil のカスタム Fetcher (ZipImageFetcherNew) を使用して画像を表示する
  */
 @Composable
 private fun SimpleImageDisplay(
@@ -463,104 +463,53 @@ private fun SimpleImageDisplay(
     directZipHandler: DirectZipImageHandler,
     onLoadingStateChange: (isLoading: Boolean, hasError: Boolean, errorMessage: String) -> Unit
 ) {
-    var imageData by remember(imageEntry.id) { mutableStateOf<ByteArray?>(null) }
-    var isLoading by remember { mutableStateOf(true) }
     var hasError by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf("") }
 
-    // 画像データを取得
-    LaunchedEffect(imageEntry.id) {
-        isLoading = true
-        hasError = false
-        onLoadingStateChange(true, false, "")
-        
-        try {
-            println("DEBUG: SimpleImageDisplay loading ${imageEntry.fileName}")
-            val data = directZipHandler.getImageData(imageEntry)
-            
-            if (data != null && data.isNotEmpty()) {
-                imageData = data
-                isLoading = false
-                hasError = false
-                onLoadingStateChange(false, false, "")
-                println("DEBUG: SimpleImageDisplay loaded ${data.size} bytes for ${imageEntry.fileName}")
-            } else {
-                isLoading = false
-                hasError = true
-                errorMessage = "画像データが空または取得できませんでした"
-                onLoadingStateChange(false, true, errorMessage)
-                println("ERROR: SimpleImageDisplay no data for ${imageEntry.fileName}")
-            }
-        } catch (e: Exception) {
-            isLoading = false
-            hasError = true
-            errorMessage = e.message ?: "Unknown error"
-            onLoadingStateChange(false, true, errorMessage)
-            println("ERROR: SimpleImageDisplay exception for ${imageEntry.fileName}: $errorMessage")
-            e.printStackTrace()
-        }
-    }
-
-    // ローディングまたはエラーの場合
-    if (isLoading || hasError) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.8f)),
-            contentAlignment = Alignment.Center
-        ) {
-            if (isLoading) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    CircularProgressIndicator(
-                        color = Color.White,
-                        modifier = Modifier.size(48.dp)
-                    )
-                    Text(
-                        text = "画像を読み込み中...",
-                        color = Color.White,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    Text(
-                        text = imageEntry.fileName,
-                        color = Color.White.copy(alpha = 0.7f),
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center
-                    )
+    val painter = rememberAsyncImagePainter(
+        model = imageEntry,
+        onState = { state ->
+            when (state) {
+                is AsyncImagePainter.State.Loading -> {
+                    onLoadingStateChange(true, false, "")
                 }
+                is AsyncImagePainter.State.Success -> {
+                    hasError = false
+                    onLoadingStateChange(false, false, "")
+                    println("DEBUG: AsyncImagePainter success for ${imageEntry.fileName}")
+                }
+                is AsyncImagePainter.State.Error -> {
+                    hasError = true
+                    errorMessage = state.result.throwable.message ?: "画像デコードエラー"
+                    onLoadingStateChange(false, true, errorMessage)
+                    println("ERROR: AsyncImagePainter error for ${imageEntry.fileName}: $errorMessage")
+                }
+                else -> {}
             }
         }
-    }
+    )
 
-    // 画像表示
-    if (imageData != null && !hasError) {
-        val painter = rememberAsyncImagePainter(
-            model = imageData,
-            onState = { state ->
-                when (state) {
-                    is AsyncImagePainter.State.Error -> {
-                        hasError = true
-                        errorMessage = state.result.throwable.message ?: "画像デコードエラー"
-                        onLoadingStateChange(false, true, errorMessage)
-                        println("ERROR: AsyncImagePainter decode error for ${imageEntry.fileName}: $errorMessage")
-                    }
-                    is AsyncImagePainter.State.Success -> {
-                        println("DEBUG: AsyncImagePainter success for ${imageEntry.fileName}")
-                    }
-                    else -> {
-                        // Other states
-                    }
-                }
-            }
-        )
-
+    Box(modifier = Modifier.fillMaxSize()) {
         Image(
             painter = painter,
             contentDescription = "Image: ${imageEntry.fileName}",
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Fit
         )
+
+        // ローディング表示
+        if (painter.state is AsyncImagePainter.State.Loading) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.3f)),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(
+                    color = Color.White,
+                    modifier = Modifier.size(48.dp)
+                )
+            }
+        }
     }
 }

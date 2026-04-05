@@ -25,87 +25,77 @@ class ZipImageFetcherNew(
         println("DEBUG: Entry name: ${data.entryName}")
         
         try {
-            // ZIP ファイルの存在確認
-            if (data.zipFile != null) {
-                println("DEBUG: ZIP file path: ${data.zipFile.absolutePath}")
-                println("DEBUG: ZIP file exists: ${data.zipFile.exists()}")
-                println("DEBUG: ZIP file size: ${data.zipFile.length()} bytes")
-            }
-            
             // 高速化されたDirectZipImageHandlerを使用
             val imageData = zipHandler.getImageData(data)
             
-            if (imageData == null) {
-                println("ERROR: ZipImageFetcherNew - imageData is null for ${data.fileName}")
-                println("ERROR: ZIP URI: ${data.zipUri}")
-                println("ERROR: Entry name: ${data.entryName}")
-                println("ERROR: ZIP file: ${data.zipFile?.absolutePath}")
-                throw IllegalStateException("Failed to load image: ${data.fileName}")
-            }
-            
-            if (imageData.isEmpty()) {
-                println("ERROR: ZipImageFetcherNew - imageData is empty for ${data.fileName}")
-                throw IllegalStateException("Image data is empty: ${data.fileName}")
+            if (imageData == null || imageData.isEmpty()) {
+                throw IllegalStateException("Failed to load image or data is empty: ${data.fileName}")
             }
             
             println("DEBUG: Successfully loaded image data: ${imageData.size} bytes for ${data.fileName}")
             
-            // ファイルヘッダーを確認
-            if (imageData.size >= 10) {
-                val header = imageData.take(10).joinToString(" ") { "0x%02x".format(it) }
-                println("DEBUG: Image header: $header")
+            // デコードオプションの設定（ダウンサンプリング用）
+            val decodeOptions = BitmapFactory.Options().apply {
+                // まずサイズだけを取得
+                inJustDecodeBounds = true
+                BitmapFactory.decodeByteArray(imageData, 0, imageData.size, this)
+                
+                // 適切な inSampleSize を計算
+                inSampleSize = calculateInSampleSize(this, options.size.width.px, options.size.height.px)
+                inJustDecodeBounds = false
+                
+                // メモリ節約設定
+                inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
             }
             
             val bitmapDecodeStart = System.currentTimeMillis()
             
-            // ByteArrayからBitmapを作成
-            val bitmap = BitmapFactory.decodeByteArray(imageData, 0, imageData.size)
+            // 設定したオプションでデコード
+            val bitmap = BitmapFactory.decodeByteArray(imageData, 0, imageData.size, decodeOptions)
             
             if (bitmap == null) {
-                println("ERROR: ZipImageFetcherNew - Failed to decode bitmap for ${data.fileName}")
-                println("ERROR: Image data size: ${imageData.size} bytes")
-                if (imageData.size >= 10) {
-                    println("ERROR: First 10 bytes: ${imageData.take(10).joinToString { "0x%02x".format(it) }}")
-                }
-                
-                // ファイル形式の推定
-                val format = when {
-                    imageData.size >= 2 && imageData[0] == 0xFF.toByte() && imageData[1] == 0xD8.toByte() -> "JPEG"
-                    imageData.size >= 8 && imageData[1] == 'P'.code.toByte() && imageData[2] == 'N'.code.toByte() && imageData[3] == 'G'.code.toByte() -> "PNG"
-                    imageData.size >= 6 && imageData[0] == 'G'.code.toByte() && imageData[1] == 'I'.code.toByte() && imageData[2] == 'F'.code.toByte() -> "GIF"
-                    else -> "Unknown"
-                }
-                println("ERROR: Detected format: $format")
-                
                 throw IllegalStateException("Failed to decode image: ${data.fileName}")
-            }
-            
-            if (bitmap.isRecycled) {
-                println("ERROR: ZipImageFetcherNew - Bitmap is recycled for ${data.fileName}")
-                throw IllegalStateException("Bitmap is recycled: ${data.fileName}")
             }
             
             val totalTime = System.currentTimeMillis() - startTime
             val decodeTime = System.currentTimeMillis() - bitmapDecodeStart
             
-            println("DEBUG: ZipImageFetcherNew completed ${data.fileName} in ${totalTime}ms (decode: ${decodeTime}ms)")
-            println("DEBUG: Bitmap: ${bitmap.width}x${bitmap.height}, config: ${bitmap.config}")
+            println("DEBUG: ZipImageFetcherNew completed ${data.fileName} in ${totalTime}ms (decode: ${decodeTime}ms, sampleSize: ${decodeOptions.inSampleSize})")
             
-            // BitmapをDrawableに変換してCoilに返す
             return DrawableResult(
                 drawable = bitmap.toDrawable(options.context.resources),
-                isSampled = false,
+                isSampled = decodeOptions.inSampleSize > 1,
                 dataSource = DataSource.DISK
             )
         } catch (e: Exception) {
-            val totalTime = System.currentTimeMillis() - startTime
-            println("ERROR: ZipImageFetcherNew failed for ${data.fileName} after ${totalTime}ms")
-            println("ERROR: Exception type: ${e::class.java.simpleName}")
-            println("ERROR: Exception message: ${e.message}")
-            e.printStackTrace()
+            println("ERROR: ZipImageFetcherNew failed for ${data.fileName}: ${e.message}")
             throw e
         }
     }
+
+    private fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
+        val (height: Int, width: Int) = options.outHeight to options.outWidth
+        var inSampleSize = 1
+
+        if (reqWidth > 0 && reqHeight > 0) {
+            if (height > reqHeight || width > reqWidth) {
+                val halfHeight: Int = height / 2
+                val halfWidth: Int = width / 2
+
+                while (halfHeight / inSampleSize >= reqHeight && halfWidth / inSampleSize >= reqWidth) {
+                    inSampleSize *= 2
+                }
+            }
+        }
+        return inSampleSize
+    }
+
+    private val coil.size.Dimension.px: Int
+        get() = when (this) {
+            is coil.size.Dimension.Pixels -> px
+            else -> 0
+        }
+
     
     class Factory(private val zipHandler: DirectZipImageHandler) : Fetcher.Factory<ZipImageEntry> {
         override fun create(data: ZipImageEntry, options: Options, imageLoader: ImageLoader): Fetcher {

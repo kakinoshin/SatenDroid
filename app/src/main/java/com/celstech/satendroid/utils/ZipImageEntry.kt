@@ -15,6 +15,7 @@ data class ZipImageEntry(
     val index: Int
 ) {
     // 一意のIDを生成（Coilのキーとして使用）
+    // 重複ファイル名がある場合でも一意になるよう、インデックスを含める
     val id: String
-        get() = "${zipUri}#${entryName}"
+        get() = "${zipUri}#${entryName}_${index}"
 }

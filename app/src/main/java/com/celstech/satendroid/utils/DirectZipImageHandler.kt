@@ -700,56 +700,30 @@ class DirectZipImageHandler(private val context: Context) {
             // フォールバック: ZipInputStreamを使用した従来の方法
             try {
                 context.contentResolver.openInputStream(imageEntry.zipUri)?.use { inputStream ->
-                    println("DEBUG: Opened InputStream for ${imageEntry.zipUri}")
-
                     ZipInputStream(inputStream).use { zipInputStream ->
-                        println("DEBUG: Created ZipInputStream for ${imageEntry.fileName}")
-
                         var entry = zipInputStream.nextEntry
-                        var entryCount = 0
+                        var currentIndex = 0
 
                         while (entry != null) {
-                            entryCount++
-                            println("DEBUG: Processing entry #$entryCount: ${entry.name}")
-
-                            if (entry.name == imageEntry.entryName) {
-                                println("DEBUG: Found target entry: ${entry.name}")
-                                println("DEBUG: Entry size: ${entry.size}")
-                                println("DEBUG: Entry compressed size: ${entry.compressedSize}")
-
+                            if (currentIndex == imageEntry.index) {
+                                // インデックスが一致するエントリを見つけた
+                                println("DEBUG: Found target entry by index ($currentIndex): ${entry.name}")
+                                
                                 val data = zipInputStream.readBytes()
                                 println("DEBUG: Read ${data.size} bytes from ${imageEntry.fileName}")
-
-                                if (data.isNotEmpty()) {
-                                    // ファイルヘッダーをチェック
-                                    if (data.size >= 10) {
-                                        val header =
-                                            data.take(10).joinToString(" ") { "0x%02x".format(it) }
-                                        println("DEBUG: File header: $header")
-                                    }
-                                }
-
                                 return@withContext data
                             }
 
                             zipInputStream.closeEntry()
                             entry = zipInputStream.nextEntry
-
-                            // 大量のエントリがある場合の進行状況
-                            if (entryCount % 100 == 0) {
-                                println("DEBUG: Processed $entryCount entries, still searching for ${imageEntry.entryName}")
-                            }
+                            currentIndex++
                         }
 
-                        println("ERROR: Entry not found in ZIP: ${imageEntry.entryName} (searched $entryCount entries)")
+                        println("ERROR: Entry index not found in ZIP: ${imageEntry.index} (total entries: $currentIndex)")
                     }
                 }
             } catch (e: IOException) {
                 println("ERROR: IOException in loadImageFromZip for ${imageEntry.fileName}: ${e.message}")
-                e.printStackTrace()
-            } catch (e: Exception) {
-                println("ERROR: Exception in loadImageFromZip for ${imageEntry.fileName}: ${e.message}")
-                e.printStackTrace()
             }
 
             println("ERROR: Failed to load image ${imageEntry.fileName}")
@@ -770,33 +744,39 @@ class DirectZipImageHandler(private val context: Context) {
                     null
                 }
             } ?: run {
-                println("DEBUG: Cannot determine file path for optimized read: ${imageEntry.zipUri}")
+                println("ERROR: tryOptimizedRead - Cannot determine file path for: ${imageEntry.zipUri}")
                 return@withContext null
             }
 
-            println("DEBUG: Using file path for optimized read: $filePath")
+            println("DEBUG: tryOptimizedRead - Attempting optimized read from: $filePath")
 
-            var zipFile: ZipFile? = null
+            var zipFile: java.util.zip.ZipFile? = null
             try {
-                // ZipFileManagerから安全にZipFileを取得（suspend対応）
+                // ZipFileManagerから安全にZipFileを取得
                 zipFile = zipFileManager.getZipFile(filePath)
                 if (zipFile == null) {
-                    println("DEBUG: Failed to get ZipFile from manager for ${imageEntry.fileName}")
+                    println("ERROR: tryOptimizedRead - Failed to obtain ZipFile for: $filePath")
                     return@withContext null
                 }
 
-                println("DEBUG: Successfully obtained ZipFile for ${imageEntry.fileName}")
-
-                // エントリを検索
-                val zipEntry = zipFile.getEntry(imageEntry.entryName)
-                if (zipEntry == null) {
-                    println("DEBUG: Entry not found in ZipFile: ${imageEntry.entryName}")
-                    // 利用可能なエントリをリスト（デバッグ用）
-                    val entries = zipFile.entries().toList().take(10) // 最初の10個だけ
-                    println("DEBUG: Available entries (first 10):")
-                    entries.forEach { entry ->
-                        println("  - ${entry.name}")
+                // インデックスに基づいてエントリを取得（重複ファイル名対応）
+                val entries = zipFile.entries().asSequence().toList()
+                val zipEntry = if (imageEntry.index >= 0 && imageEntry.index < entries.size) {
+                    val entryAtIdx = entries[imageEntry.index]
+                    // 名前も一致することを確認（安全のため）
+                    if (entryAtIdx.name == imageEntry.entryName) {
+                        entryAtIdx
+                    } else {
+                        // 名前が不一致な場合は名前で再検索（フェールセーフ）
+                        println("WARNING: Index-based entry mismatch. Falling back to name: ${imageEntry.entryName}")
+                        zipFile.getEntry(imageEntry.entryName)
                     }
+                } else {
+                    zipFile.getEntry(imageEntry.entryName)
+                }
+
+                if (zipEntry == null) {
+                    println("ERROR: tryOptimizedRead - Entry not found in ZIP: ${imageEntry.entryName}")
                     return@withContext null
                 }
 
