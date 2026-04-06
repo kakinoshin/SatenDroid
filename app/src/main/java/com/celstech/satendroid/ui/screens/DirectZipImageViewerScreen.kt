@@ -155,7 +155,8 @@ fun DirectZipImageViewerScreen(
             modifier = Modifier.fillMaxSize(),
             key = { index -> imageEntries[index].id },
             userScrollEnabled = !showPageSlider,
-            reverseLayout = reverseSwipeDirection
+            reverseLayout = reverseSwipeDirection,
+            beyondBoundsPageCount = 1 // 前後1ページをあらかじめ読み込む
         ) { index ->
             Box(modifier = Modifier.fillMaxSize()) {
                 // 画像表示の状態管理

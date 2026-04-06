@@ -592,6 +592,11 @@ class DirectZipImageHandler(private val context: Context) {
     fun updateCurrentPage(page: Int) {
         currentPagePosition = page
         println("DEBUG: DirectZipHandler - Current page updated to: $page")
+        
+        // ページ変更時にプリロードをトリガー
+        if (enablePreload) {
+            triggerPreload(page)
+        }
     }
 
     /**
@@ -666,7 +671,7 @@ class DirectZipImageHandler(private val context: Context) {
 
             if (addedToCache && enablePreload) {
                 preloadScope.launch {
-                    delay(1000) // 1秒後にプリロード開始（500msから延長してより安定化）
+                    delay(200) // 200ms後にプリロード開始（1000msから短縮）
                     triggerPreload(imageEntry.index)
                 }
             }

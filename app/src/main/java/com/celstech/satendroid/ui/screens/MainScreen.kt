@@ -322,7 +322,7 @@ fun MainScreen() {
         val currentPage = pagerState.currentPage
 
         if (state != null && currentPage >= 0 && !isLoading) {
-            delay(500) // 500ms待機してページ遷移が安定するのを待つ
+            delay(100) // 100ms待機してページ遷移が安定するのを待つ（500msから短縮）
 
             // 状態が変わっていないことを確認
             if (currentImageViewerState?.fileId == state.fileId &&

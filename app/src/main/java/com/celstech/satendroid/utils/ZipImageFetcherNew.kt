@@ -34,6 +34,10 @@ class ZipImageFetcherNew(
             
             println("DEBUG: Successfully loaded image data: ${imageData.size} bytes for ${data.fileName}")
             
+            // 適切な inSampleSize を計算
+            val reqWidth = dimensionToPx(options.size.width)
+            val reqHeight = dimensionToPx(options.size.height)
+            
             // デコードオプションの設定（ダウンサンプリング用）
             val decodeOptions = BitmapFactory.Options().apply {
                 // まずサイズだけを取得
@@ -41,7 +45,7 @@ class ZipImageFetcherNew(
                 BitmapFactory.decodeByteArray(imageData, 0, imageData.size, this)
                 
                 // 適切な inSampleSize を計算
-                inSampleSize = calculateInSampleSize(this, options.size.width.px, options.size.height.px)
+                inSampleSize = calculateInSampleSize(this, reqWidth, reqHeight)
                 inJustDecodeBounds = false
                 
                 // メモリ節約設定
@@ -90,11 +94,12 @@ class ZipImageFetcherNew(
         return inSampleSize
     }
 
-    private val coil.size.Dimension.px: Int
-        get() = when (this) {
-            is coil.size.Dimension.Pixels -> px
+    private fun dimensionToPx(dimension: coil.size.Dimension): Int {
+        return when (dimension) {
+            is coil.size.Dimension.Pixels -> dimension.px
             else -> 0
         }
+    }
 
     
     class Factory(private val zipHandler: DirectZipImageHandler) : Fetcher.Factory<ZipImageEntry> {
